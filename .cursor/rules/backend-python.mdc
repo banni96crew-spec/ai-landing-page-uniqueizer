@@ -1,0 +1,185 @@
+---
+description: Backend rules for all Python files under backend/. Covers exact FastAPI endpoint signatures, Pydantic v2 schemas, JOB_QUEUES singleton import chain, worker polling loop, all 5 module implementations with their inputs/outputs, WebSocket broadcaster protocol, CORS configuration, and all 18 edge case algorithms (EC-01 through EC-18). Apply whenever editing or generating any backend Python file.
+globs: backend/**/*.py
+alwaysApply: false
+---
+
+# BACKEND — Python / FastAPI
+
+## Language & Framework Versions
+- Python 3.12
+- FastAPI (latest stable). Use Pydantic v2 for all schemas.
+- uvicorn as the ASGI server.
+
+## Project Structure (exact — do not add or rename files)
+backend/
+├── main.py            # FastAPI app, CORS, lifespan, JOB_QUEUES singleton
+├── database.py        # sqlite3 connection, WAL mode, init_db(), get_connection()
+├── models.py          # Row factory functions: sqlite3.Row → dict
+├── schemas.py         # Pydantic v2 request/response models
+├── routers/
+│   ├── jobs.py        # /api/jobs CRUD
+│   ├── settings.py    # /api/settings UPSERT
+│   └── artifacts.py   # /api/artifacts download
+├── worker/
+│   ├── runner.py      # while True polling loop + MODULE_DONE_MARKERS constant
+│   ├── module_scraper.py
+│   ├── module_dom_mutator.py
+│   ├── module_ai_rewriter.py
+│   ├── module_media.py
+│   └── module_packer.py
+└── ws/
+    └── log_broadcaster.py
+
+## database.py Rules
+- Use ONLY stdlib sqlite3. Never import sqlalchemy or any ORM.
+- Every connection MUST set: conn.row_factory = sqlite3.Row
+- Every connection MUST execute: PRAGMA journal_mode=WAL and PRAGMA foreign_keys=ON
+- init_db() reads migrations/001_init.sql via conn.executescript(). Fallback to
+  INLINE_DDL constant (identical content) if the file is missing.
+- get_connection() is the single factory for all DB connections.
+
+## JOB_QUEUES Singleton Rules
+- JOB_QUEUES: dict[int, asyncio.Queue] = {} is defined ONLY in backend/main.py.
+- Both runner.py and ws/log_broadcaster.py import it via: from backend.main import JOB_QUEUES
+- main.py does NOT import from runner.py (only creates asyncio.Task). This prevents
+  circular imports.
+- Worker creates JOB_QUEUES[job_id] = asyncio.Queue() BEFORE starting the pipeline.
+- Worker removes it via JOB_QUEUES.pop(job_id, None) in a finally block AFTER done/failed.
+
+## worker/runner.py Rules
+- Implements a single async def worker_loop() with while True loop.
+- Polls DB every WORKER_POLL_INTERVAL seconds (default 2, from env var).
+- Uses atomic claim: UPDATE jobs SET status='running' WHERE id=? AND status='pending'.
+  Check rowcount == 1. If 0, job was already claimed by another worker — skip.
+- The loop catches ALL exceptions (except asyncio.CancelledError) to prevent crashing.
+- MODULE_DONE_MARKERS = {"MODULE_SCRAPER_DONE", "MODULE_DOM_MUTATOR_DONE",
+  "MODULE_AI_REWRITER_DONE", "MODULE_MEDIA_UNIQUEIZER_DONE", "MODULE_PACKER_DONE"}
+  defined as a module-level constant in runner.py.
+
+## API Routes Specification
+
+### POST /api/jobs
+- Request: JobCreateRequest(target_url: HttpUrl)
+- Response: 201 JobResponse(id, status, created_at, target_url)
+- Validation: URL must start with http:// or https:// → 400 if not.
+- Duplicate target_url is allowed (GAP-I). No deduplication.
+- Does NOT start processing. Creates DB record with status='pending' only.
+
+### GET /api/jobs
+- Query params: limit: int = 20, offset: int = 0
+- Response: 200 List[JobResponse], ordered DESC by created_at
+
+### GET /api/jobs/{job_id}
+- Response: 200 JobDetailResponse(id, status, target_url, created_at, updated_at,
+  artifact: Optional[ArtifactResponse], progress_pct: int)
+- progress_pct computed by SQL COUNT of MODULE_DONE_MARKERS in logs × 18
+- 404 if job not found
+
+### DELETE /api/jobs/{job_id}
+- Deletes job, related logs, and ZIP file from disk.
+- Response: 200 {"detail": "deleted"} | 404
+
+### GET /api/settings
+- Returns all settings EXCEPT masked api_key values (keys ending in '_api_key').
+- Response: 200 List[SettingResponse(key, value)]
+
+### PUT /api/settings
+- Batch UPSERT using INSERT OR REPLACE.
+- Validation before write:
+  - noise_intensity: float in [0.0, 0.01] → 422 if out of range
+  - ai_provider: must be 'openai' or 'anthropic' → 422 if invalid
+- Response: 200 {"updated": int}
+
+### GET /api/artifacts/{job_id}/download
+- Returns FileResponse with media_type='application/zip'
+- Filename: uniqueized_{job_id}_{YYYY-MM-DD}.zip where date comes from jobs.created_at[:10]
+- 409 {"detail": "Job not completed", "current_status": str} if status != 'done'
+- 500 {"detail": "Artifact file missing from disk"} if file not on disk
+- 404 if job not found
+
+### WebSocket /ws/logs/{job_id}
+- Accept connection only if job exists.
+- Read from JOB_QUEUES[job_id] (per-job queue, not global).
+- Message formats:
+  - Log line: {"type": "log", "message": str, "timestamp": str}
+  - Terminal done: {"type": "done", "status": "done"}
+  - Terminal fail: {"type": "done", "status": "failed"}
+- On WebSocketDisconnect: silently close, do NOT interrupt the worker pipeline.
+
+## Module Implementation Rules
+
+### module_scraper.py
+- Uses playwright (async) for headless Chromium. wait_until='networkidle', timeout=60_000.
+- EC-01: TimeoutError → status='failed', log error "Timeout: target URL unreachable"
+- EC-02: networkidle > 45s → continue with partial DOM, log warn "networkidle timeout, using partial DOM"
+- EC-03: final page URL contains captcha|verify|challenge → status='failed'
+- EC-04: len(html) < 1000 → status='failed', log error "Scraped HTML too small, possible bot detection"
+- Uses BeautifulSoup4 + lxml parser.
+- Strips tracker scripts: connect.facebook.net, analytics.tiktok.com, googletagmanager.com,
+  mc.yandex.ru, hotjar.com
+- Downloads Google Fonts locally using httpx with User-Agent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+- Asset URL rewriting uses urllib.parse (urlparse, urljoin) + httpx (sync client, timeout=30)
+- REWRITABLE_ATTRS = {'src', 'href', 'action', 'data-src', 'data-href'}
+- Also handle srcset attribute (comma-separated URLs with width/density descriptors)
+- EC-05: asset HTTP != 200 → log warn, skip asset, keep original URL
+- CSS url(...) rewriting uses re.sub with CSS_URL_PATTERN callback. Never cssutils.
+- Output dirs: raw/ then cleaned/ under /jobs/{job_id}/
+
+### module_dom_mutator.py
+- CSS class extraction via regex ONLY: re.findall(r'(?<!["\'])([.#][\w-]+)(?=\s*[{,:\[])', css_text)
+- NEVER use cssutils.
+- Alias format: 'x' + hex(random)[2:6] (e.g., .order-btn → .x8f9q)
+- Respect exclusion_prefixes (default: 'js-,swiper-' from settings.js_class_exclusion_prefixes)
+- JS replacement: exactly 6 patterns defined in JS_REPLACE_PATTERNS (querySelector/All,
+  classList.add/remove/toggle/contains, getElementsByClassName, getElementById,
+  jQuery $(), setAttribute). No other patterns. String concatenation is out of scope.
+- EC-06: if regex fails on minified CSS → skip that file, log warn "CSS parse failed: {filename}"
+- DOM noise: inject hidden divs with random alias classes, randomize whitespace.
+- Output: /jobs/{job_id}/mutated/
+
+### module_ai_rewriter.py
+- Supported providers: 'openai' (gpt-4o-mini) and 'anthropic' (claude-haiku). Both are
+  EQUAL providers, neither is primary or fallback.
+- Imports: openai>=1.0 and anthropic (both required).
+- EC-10: api_key == '' → fail FAST before Module 3, log error "AI API key not configured. Visit /settings."
+- EC-11: HTTP 429 → retry 3x with backoff [1, 4, 16] seconds. After 3 fails → skip batch,
+  use original text, log warn.
+- EC-12: AI returns markdown fences → strip with r'```[\w]*\n?(.*?)```' (re.DOTALL)
+- EC-13: len ratio not in [0.85, 1.15] → use original text, log warn "AI text length violated for node {i}, using original"
+- EC-14: anthropic package missing → log error "anthropic package not installed", status='failed'
+- TEXT_NODES_SELECTOR = ['h1','h2','h3','h4','h5','h6','p','button','li','span']
+- BATCH_SIZE = 20 text nodes per API call. MAX_TOKENS_PER_BATCH = 3000.
+- Module 3 COPIES the entire mutated/ directory structure to rewritten/ (including all assets).
+- Output: /jobs/{job_id}/rewritten/
+
+### module_media.py
+- Uses Pillow >= 10.0 and numpy.
+- Reads images from rewritten_dir using rglob("*"), modifies in-place.
+- SUPPORTED_FORMATS = ['.jpg', '.jpeg', '.png', '.webp']
+- GIF and SVG: skip, log warn.
+- Processing: strip EXIF (RGB conversion), crop 1px, inject noise (≤1%, numpy random normal).
+- noise_intensity ≤ 0.01 (never exceed 1%). EC-08: Pillow UnidentifiedImageError → skip file, log warn.
+- All writes are in-place in /jobs/{job_id}/rewritten/assets/.
+
+### module_packer.py
+- Uses stdlib: zipfile, hashlib, shutil. No external dependencies.
+- Packs /jobs/{job_id}/rewritten/ entirely with ZIP_DEFLATED compression.
+- EC-17: if artifacts record for job_id already exists → skip, return existing path.
+- After successful pack: INSERT into artifacts (job_id, file_path, file_size, hash).
+- DB field name is 'hash' (NOT 'sha256_hash').
+- Calls cleanup_job_workdir(): shutil.rmtree(job_dir, ignore_errors=True) to delete all
+  intermediate dirs (raw/, cleaned/, mutated/, rewritten/).
+- Output: /volumes/artifacts/{job_id}.zip
+
+## Edge Cases (must implement exactly as specified)
+- EC-09: OSError "No space left" → status='failed', cleanup job dir, log error "Disk space error: {str(e)}"
+- EC-15: Atomic job claim via UPDATE WHERE status='pending', check rowcount == 1.
+- EC-16: On startup, UPDATE jobs SET status='failed', error_message='Worker interrupted' WHERE status='running'
+- EC-18: WebSocketDisconnect → silently close, never interrupt worker.
+
+## CORS (main.py)
+- allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"]
+- NEVER use wildcard "*".
+- allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+- allow_credentials=True

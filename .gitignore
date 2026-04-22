@@ -1,0 +1,14 @@
+# Environment directories
+node_modules/
+__pycache__/
+.venv/
+
+# Secrets
+.env
+
+# PRD runtime data
+app/data/app.db
+app/volumes/
+
+# OS-specific files
+.DS_Store

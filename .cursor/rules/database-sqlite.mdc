@@ -1,0 +1,34 @@
+---
+description: Database rules for SQLite schema files, database.py, and models.py. Enforces exact DDL structure, explicitly disallows non-existent fields, mandates exact index and trigger names, defines the progress_pct SQL formula, governs migration file handling, and enforces query parameterization. Apply whenever editing backend/database.py, backend/models.py, or any file in migrations/.
+globs: backend/database.py, backend/models.py, migrations/*.sql
+alwaysApply: false
+---
+# DATABASE — SQLite
+
+## Schema Rules (exact DDL from Section 3.2 — do not alter)
+- 4 tables: jobs, artifacts, settings, logs.
+- jobs: id, target_url, status (DEFAULT 'pending'), error_message, created_at, updated_at.
+  NO aggression_level column. Ever.
+- artifacts: id, job_id (FK → jobs.id), file_path, file_size (nullable), hash (nullable).
+  Column name is 'hash', NOT 'sha256_hash'. NO UNIQUE on job_id. NO ON DELETE CASCADE.
+- settings: key (PK), value, updated_at. Key-value store.
+- logs: id, job_id (FK), level (DEFAULT 'info'), message, timestamp.
+  Level values: 'info' | 'warn' | 'error' (all lowercase).
+- Default settings rows: openai_api_key='', anthropic_api_key='', ai_provider='openai',
+  ai_model='gpt-4o-mini', noise_intensity='0.01', js_class_exclusion_prefixes='js-,swiper-'
+- Index: idx_jobs_status_created_at ON jobs(status, created_at)
+- Index: idx_logs_job_id_timestamp ON logs(job_id, timestamp)
+- Trigger: trg_jobs_updated_at — updates updated_at on jobs UPDATE.
+
+## Migrations
+- migrations/001_init.sql contains the full DDL. This file MUST exist in the repository.
+- database.py reads this file at startup via conn.executescript().
+- INLINE_DDL constant in database.py is an identical copy for fallback only.
+- COPY migrations/ ./migrations/ must be in Dockerfile.
+
+## Query Patterns
+- Always use parameterized queries (?, not f-strings) to prevent SQL injection.
+- Use WITH ... AS (CTE) or subqueries; avoid N+1 patterns.
+- progress_pct SQL: SELECT COUNT(*) FROM logs WHERE job_id = ? AND message IN
+  ('MODULE_SCRAPER_DONE', 'MODULE_DOM_MUTATOR_DONE', 'MODULE_AI_REWRITER_DONE',
+  'MODULE_MEDIA_UNIQUEIZER_DONE', 'MODULE_PACKER_DONE')  → result * 18.

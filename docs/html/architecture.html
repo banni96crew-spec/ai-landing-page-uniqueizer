@@ -1,0 +1,335 @@
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font-sans); }
+  .arch { padding: 16px 0; }
+  .section-label { font-size: 11px; font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-text-tertiary); margin-bottom: 10px; }
+
+  .tier { display: flex; gap: 10px; margin-bottom: 10px; }
+
+  .stack-card {
+    border: 0.5px solid var(--color-border-tertiary);
+    border-radius: var(--border-radius-lg);
+    padding: 12px 14px;
+    background: var(--color-background-secondary);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    flex: 1;
+    min-width: 0;
+  }
+  .stack-card:hover { border-color: var(--color-border-primary); background: var(--color-background-primary); }
+  .stack-card.active { border-color: var(--color-border-primary); background: var(--color-background-primary); }
+
+  .flow-block {
+    border: 0.5px solid var(--color-border-tertiary);
+    border-radius: var(--border-radius-lg);
+    padding: 10px 12px;
+    background: var(--color-background-secondary);
+    flex: 1;
+    min-width: 0;
+  }
+
+  .card-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); display: flex; align-items: center; gap: 6px; }
+  .card-sub { font-size: 11px; color: var(--color-text-tertiary); margin-top: 3px; line-height: 1.4; }
+  .card-tech { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+
+  .badge {
+    font-size: 10px; font-weight: 500; padding: 2px 7px; border-radius: 20px;
+    border: 0.5px solid;
+  }
+  .b-purple { color: #534AB7; border-color: #AFA9EC; background: #EEEDFE; }
+  .b-teal   { color: #0F6E56; border-color: #5DCAA5; background: #E1F5EE; }
+  .b-blue   { color: #185FA5; border-color: #85B7EB; background: #E6F1FB; }
+  .b-amber  { color: #854F0B; border-color: #EF9F27; background: #FAEEDA; }
+  .b-coral  { color: #993C1D; border-color: #F0997B; background: #FAECE7; }
+  .b-green  { color: #3B6D11; border-color: #97C459; background: #EAF3DE; }
+  .b-gray   { color: #5F5E5A; border-color: #B4B2A9; background: #F1EFE8; }
+  .b-pink   { color: #993556; border-color: #ED93B1; background: #FBEAF0; }
+  @media (prefers-color-scheme: dark) {
+    .b-purple { color: #AFA9EC; border-color: #534AB7; background: #26215C; }
+    .b-teal   { color: #5DCAA5; border-color: #0F6E56; background: #04342C; }
+    .b-blue   { color: #85B7EB; border-color: #185FA5; background: #042C53; }
+    .b-amber  { color: #EF9F27; border-color: #854F0B; background: #412402; }
+    .b-coral  { color: #F0997B; border-color: #993C1D; background: #4A1B0C; }
+    .b-green  { color: #97C459; border-color: #3B6D11; background: #173404; }
+    .b-gray   { color: #B4B2A9; border-color: #5F5E5A; background: #2C2C2A; }
+    .b-pink   { color: #ED93B1; border-color: #993556; background: #4B1528; }
+  }
+
+  .stack-detail-panel {
+    border: 0.5px solid var(--color-border-secondary);
+    border-radius: var(--border-radius-lg);
+    padding: 14px 16px;
+    background: var(--color-background-secondary);
+    margin-top: 10px;
+    min-height: 56px;
+  }
+  .stack-detail-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 6px; }
+  .stack-detail-body { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; }
+
+  .pipe-container {
+    border: 0.5px dashed var(--color-border-secondary);
+    border-radius: var(--border-radius-lg);
+    padding: 12px;
+    background: transparent;
+    margin-bottom: 10px;
+  }
+  .pipe-label { font-size: 11px; font-weight: 500; color: var(--color-text-secondary); margin-bottom: 8px; }
+
+  .pipeline { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding-bottom: 4px; }
+  .pipe-step {
+    flex: 1; min-width: 110px;
+    border: 0.5px solid var(--color-border-tertiary);
+    border-radius: var(--border-radius-md);
+    padding: 10px;
+    background: var(--color-background-secondary);
+    cursor: pointer;
+    transition: border-color 0.15s;
+    position: relative;
+  }
+  .pipe-step:hover { border-color: var(--color-border-primary); }
+  .pipe-step.active { border-color: var(--color-border-primary); background: var(--color-background-primary); }
+  .pipe-arrow {
+    display: flex; align-items: center; padding: 0 4px; color: var(--color-text-tertiary); font-size: 12px; flex-shrink: 0;
+  }
+  .pipe-num { font-size: 10px; font-weight: 500; color: var(--color-text-tertiary); margin-bottom: 4px; }
+  .pipe-name { font-size: 12px; font-weight: 500; color: var(--color-text-primary); line-height: 1.3; }
+  .pipe-lib { font-size: 10px; color: var(--color-text-tertiary); margin-top: 5px; line-height: 1.4; }
+
+  .pipe-detail-panel {
+    border: 0.5px solid var(--color-border-secondary);
+    border-radius: var(--border-radius-lg);
+    padding: 14px 16px;
+    background: var(--color-background-secondary);
+    margin-top: 10px;
+    min-height: 60px;
+  }
+  .pipe-detail-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 6px; }
+  .pipe-detail-body { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; }
+
+  .infra { display: flex; gap: 10px; margin-bottom: 10px; }
+  .infra-block { flex: 1; border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 12px 14px; background: var(--color-background-secondary); }
+
+  .divider { height: 0.5px; background: var(--color-border-tertiary); margin: 14px 0; }
+
+  .flow-arrow { text-align: center; color: var(--color-text-tertiary); font-size: 13px; margin: 2px 0; }
+
+  .cmd { font-family: var(--font-mono); font-size: 11px; background: var(--color-background-tertiary); border: 0.5px solid var(--color-border-tertiary); border-radius: 6px; padding: 6px 10px; color: var(--color-text-secondary); margin-top: 6px; display: block; }
+
+  .deps-item {
+    border: 0.5px solid var(--color-border-tertiary);
+    border-radius: var(--border-radius-md);
+    padding: 9px 11px;
+    background: var(--color-background-secondary);
+  }
+
+  .ssot-note {
+    font-size: 11px; color: var(--color-text-tertiary); line-height: 1.55; margin-top: 12px;
+    border: 0.5px solid var(--color-border-tertiary);
+    border-radius: var(--border-radius-lg);
+    padding: 10px 12px;
+    background: var(--color-background-secondary);
+  }
+  .ssot-note code { font-family: var(--font-mono); font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--color-background-tertiary); border: 0.5px solid var(--color-border-tertiary); }
+</style>
+
+<div class="arch">
+  <div class="section-label">Tech stack</div>
+  <div class="tier">
+    <div class="stack-card" id="stack-fe" onclick="showStackDetail('fe')">
+      <div class="card-title">Frontend</div>
+      <div class="card-sub">Next.js App Router · job UI</div>
+      <div class="card-tech">
+        <span class="badge b-blue">React</span>
+        <span class="badge b-blue">Next.js</span>
+        <span class="badge b-teal">Tailwind CSS v4</span>
+      </div>
+    </div>
+    <div class="stack-card" id="stack-be" onclick="showStackDetail('be')">
+      <div class="card-title">Backend</div>
+      <div class="card-sub">REST · WebSocket logs · worker loop</div>
+      <div class="card-tech">
+        <span class="badge b-purple">Python</span>
+        <span class="badge b-purple">FastAPI</span>
+      </div>
+    </div>
+    <div class="stack-card" id="stack-db" onclick="showStackDetail('db')">
+      <div class="card-title">Database</div>
+      <div class="card-sub">SQLite file + WAL</div>
+      <div class="card-tech">
+        <span class="badge b-amber">SQLite</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="stack-detail-panel" id="stack-detail-panel">
+    <div class="stack-detail-title" id="stack-detail-title">Tech stack</div>
+    <div class="stack-detail-body" id="stack-detail-body">Click a card above. Boundaries: HTTP and heavy pipeline work share one OS process in MVP; the worker is an asyncio.Task created in FastAPI lifespan (not a separate worker process, not a thread pool for the pipeline).</div>
+  </div>
+
+  <div class="ssot-note">
+    <strong>Source of truth (text + DDL):</strong> repo root <code>Claude_v1.1_fixed.txt</code> (§2 pipeline, §3 routes &amp; DDL, §4 M*, §5 UI, §7 Docker).
+    Planned code layout: <code>backend/main.py</code>, <code>backend/routers/</code>, <code>backend/worker/*.py</code>, <code>backend/ws/log_broadcaster.py</code>; frontend under <code>app/</code> (Next.js). Mirror HTML: <code>docs/html/*.html</code>.
+  </div>
+
+  <div class="divider"></div>
+  <div class="section-label">Linear processing pipeline</div>
+
+  <div class="pipe-container">
+    <div class="pipe-label">Input URL → processed ZIP archive</div>
+    <div class="pipeline">
+      <div class="pipe-step" id="ps1" onclick="selectPipe(1)">
+        <div class="pipe-num">01</div>
+        <div class="pipe-name">Scraper &amp; Cleaner</div>
+        <div class="pipe-lib">Playwright · BS4 · lxml</div>
+      </div>
+      <div class="pipe-arrow">›</div>
+      <div class="pipe-step" id="ps2" onclick="selectPipe(2)">
+        <div class="pipe-num">02</div>
+        <div class="pipe-name">DOM &amp; CSS Mutator</div>
+        <div class="pipe-lib">Aliases · DOM noise</div>
+      </div>
+      <div class="pipe-arrow">›</div>
+      <div class="pipe-step" id="ps3" onclick="selectPipe(3)">
+        <div class="pipe-num">03</div>
+        <div class="pipe-name">AI Text Engine</div>
+        <div class="pipe-lib">GPT-4o-mini · Claude Haiku</div>
+      </div>
+      <div class="pipe-arrow">›</div>
+      <div class="pipe-step" id="ps4" onclick="selectPipe(4)">
+        <div class="pipe-num">04</div>
+        <div class="pipe-name">Media Uniqueizer</div>
+        <div class="pipe-lib">Pillow (PIL)</div>
+      </div>
+      <div class="pipe-arrow">›</div>
+      <div class="pipe-step" id="ps5" onclick="selectPipe(5)">
+        <div class="pipe-num">05</div>
+        <div class="pipe-name">Packer</div>
+        <div class="pipe-lib">zipfile stdlib</div>
+      </div>
+    </div>
+    <div class="pipe-detail-panel" id="pipe-detail-panel">
+      <div class="pipe-detail-title" id="pipe-detail-title">Pipeline</div>
+      <div class="pipe-detail-body" id="pipe-detail-body">Click a stage. Modules run sequentially inside the worker coroutine; jobs.status stays running until done or failed — fine-grained progress goes to logs.</div>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+  <div class="section-label">Infrastructure &amp; deployment</div>
+  <div class="infra">
+    <div class="infra-block">
+      <div class="card-title">Docker container</div>
+      <div class="card-sub" style="margin-top:4px">Single compose service: FastAPI on :8000, Next.js on :3000; Playwright browsers and Python deps baked in.</div>
+      <div class="card-tech" style="margin-top:8px">
+        <span class="badge b-blue">Dockerfile</span>
+        <span class="badge b-blue">docker-compose.yml</span>
+      </div>
+    </div>
+    <div class="infra-block">
+      <div class="card-title">Client deployment</div>
+      <div class="card-sub" style="margin-top:4px">Self-hosted: upload sources, then one command.</div>
+      <code class="cmd">docker-compose up -d</code>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+  <div class="section-label">Request flow</div>
+  <div style="display:flex; gap:10px; align-items:stretch;">
+    <div style="flex:1; display:flex; flex-direction:column; gap:6px;">
+      <div class="flow-block">
+        <div class="card-title" style="font-size:12px;">1 — User submits URL</div>
+        <div class="card-sub">Next.js → POST /api/jobs</div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-block">
+        <div class="card-title" style="font-size:12px;">2 — FastAPI creates job</div>
+        <div class="card-sub">INSERT into SQLite, return job_id</div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-block">
+        <div class="card-title" style="font-size:12px;">3 — Pipeline runs</div>
+        <div class="card-sub">Stages 01→05 in the asyncio worker task (same process as the API)</div>
+      </div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-block">
+        <div class="card-title" style="font-size:12px;">4 — Result</div>
+        <div class="card-sub">GET /api/jobs/{id} for status; WS /ws/logs/{id} for live tail; GET /api/artifacts/{id}/download when status = done</div>
+      </div>
+    </div>
+    <div style="flex:1; border:0.5px dashed var(--color-border-secondary); border-radius:var(--border-radius-lg); padding:12px;">
+      <div class="pipe-label">External dependencies</div>
+      <div style="display:flex; flex-direction:column; gap:8px; margin-top:4px;">
+        <div class="deps-item">
+          <div class="card-title" style="font-size:12px;">OpenAI GPT-4o-mini</div>
+          <div class="card-sub">Provider option — module 03</div>
+        </div>
+        <div class="deps-item">
+          <div class="card-title" style="font-size:12px;">Anthropic Claude Haiku</div>
+          <div class="card-sub">Equal provider — module 03 (settings.ai_provider)</div>
+        </div>
+        <div class="deps-item">
+          <div class="card-title" style="font-size:12px;">Target website</div>
+          <div class="card-sub">Fetched with Playwright (headless Chromium)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const pipeDetails = {
+  1: {
+    title: "01 — Scraper & Cleaner",
+    body: "Playwright renders the page (networkidle, scroll + short wait for lazy content). Cleaner uses BeautifulSoup4/lxml: drops scripts hitting configured tracker domains, strips remote font links/imports (per PRD lists), removes HTML comments, normalizes a few anti-bot tags. Output under /jobs/{job_id}/raw then cleaned folder per PRD."
+  },
+  2: {
+    title: "02 — DOM & CSS Mutator",
+    body: "Build a selector map from CSS (short aliases like .x8f9q), skip classes matching settings.js_class_exclusion_prefixes. Apply replacements across HTML class attributes, CSS files, and obvious JS string literals. inject_dom_noise adds hidden divs and randomizes whitespace between tags — structural variation without changing visible copy."
+  },
+  3: {
+    title: "03 — AI Text Engine",
+    body: "Extract text nodes (h1–h6, p, button, li, span…), batch to either OpenAI GPT-4o-mini or Anthropic Claude Haiku — providers are equivalent; choice via settings.ai_provider / ai_model. System prompt preserves marketing intent; fragments are reinjected into the same DOM positions with length guards per PRD."
+  },
+  4: {
+    title: "04 — Media Uniqueizer",
+    body: "Pillow pipeline: convert to RGB, strip EXIF on save, crop 1px from width/height, add numpy.random.normal pixel noise scaled by settings.noise_intensity (≤ 0.01) with clip. Supported: jpg/png/webp; GIF/SVG skipped with warn logs. Goal: change cryptographic hash / file fingerprint with imperceptible visual change — not a guarantee about third-party moderation systems."
+  },
+  5: {
+    title: "05 — Packer",
+    body: "zipfile packs rewritten + media assets with DEFLATE, writes /volumes/artifacts/{job_id}.zip, inserts artifacts row (path, size, hash) and sets jobs.status = 'done'. Uses stdlib only."
+  }
+};
+
+const stackDetails = {
+  fe: {
+    title: "Frontend — Next.js (App Router) + Tailwind",
+    body: "Dark, minimal UI: dashboard with URL submit, job list, job detail with progress bar and LogViewer. REST via native fetch; WebSocket to /ws/logs/{job_id} for streaming logs; polling fallback every 3s while job not terminal. Structure per PRD §5.2 (app/dashboard, app/jobs/[id], app/settings)."
+  },
+  be: {
+    title: "Backend — Python + FastAPI",
+    body: "Routers under backend/routers for jobs, settings, artifacts; WebSocket in backend/ws. SQLite opened with WAL in lifespan. Worker: asyncio.Task(worker_loop) started in lifespan — same OS process as uvicorn; polls pending jobs every WORKER_POLL_INTERVAL seconds, runs synchronous pipeline steps inside async-friendly boundaries (offload to threadpool if needed — implementation detail; PRD MVP is single worker task)."
+  },
+  db: {
+    title: "Database — SQLite",
+    body: "Single file (DATABASE_URL), tables jobs / artifacts / logs / settings. No separate DB server. Foreign keys ON. WAL for concurrent readers during worker writes. DDL is canonical in Claude_v1.1_fixed.txt §3.2."
+  }
+};
+
+function selectPipe(n) {
+  document.querySelectorAll('.pipe-step').forEach(el => el.classList.remove('active'));
+  document.getElementById('ps' + n).classList.add('active');
+  const d = pipeDetails[n];
+  document.getElementById('pipe-detail-title').textContent = d.title;
+  document.getElementById('pipe-detail-body').textContent = d.body;
+}
+
+function showStackDetail(key) {
+  document.querySelectorAll('.stack-card').forEach(el => el.classList.remove('active'));
+  const card = document.getElementById('stack-' + key);
+  if (card) card.classList.add('active');
+  const d = stackDetails[key];
+  if (!d) return;
+  document.getElementById('stack-detail-title').textContent = d.title;
+  document.getElementById('stack-detail-body').textContent = d.body;
+}
+</script>

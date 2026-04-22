@@ -1,0 +1,57 @@
+---
+description: Infrastructure rules for Dockerfile, entrypoint.sh, and docker-compose.yml. Enforces mandatory COPY migrations/ directive, bash & + wait process management pattern without supervisord, exact volume configuration, environment variable list, startup sequence, and known limitations that Cursor must never attempt to fix. Apply whenever editing Dockerfile, entrypoint.sh, or docker-compose.yml.
+globs: Dockerfile, entrypoint.sh, docker-compose.yml
+alwaysApply: false
+---
+
+# SECTION 5: INFRASTRUCTURE
+
+## File System Layout (volumes)
+- DATABASE_URL=/app/data/app.db
+- ARTIFACTS_DIR=/app/volumes/artifacts   (named Docker volume — persisted)
+- JOBS_WORKDIR=/app/volumes/jobs         (ephemeral — NOT a named volume)
+- WORKER_POLL_INTERVAL=2                 (seconds, from env)
+- NEXT_PUBLIC_API_URL=http://localhost:8000
+- NEXT_PUBLIC_WS_URL=ws://localhost:8000
+
+## Intermediate Directory Structure (per job)
+/jobs/{job_id}/
+├── raw/       # Module 1 output (original DOM + assets)
+├── cleaned/   # Module 1 output (after strip trackers/fonts/comments)
+├── mutated/   # Module 2 output (after CSS obfuscation + DOM noise)
+└── rewritten/ # Module 3 copies mutated/ here; Module 4 edits images in-place;
+               # Module 5 packs this entire dir into ZIP
+
+## Dockerfile Rules
+- Base image: python:3.12-slim.
+- Node.js (nodejs + npm) installed via apt-get — no separate node stage.
+- playwright install --with-deps chromium (exact command).
+- COPY migrations/ ./migrations/  MUST be present (GAP-A).
+- mkdir -p /app/data /app/volumes/artifacts /app/volumes/jobs
+- EXPOSE 8000 3000
+- CMD ["./entrypoint.sh"]
+
+## entrypoint.sh Rules
+- Uses bash & + wait. No supervisord.
+- uvicorn backend.main:app --host 0.0.0.0 --port 8000 &
+- cd /app/frontend && npm run start -- --port 3000 --hostname 0.0.0.0 &
+- trap handles SIGTERM/SIGINT → kill both PIDs.
+- wait -n exits when either process dies.
+
+## docker-compose.yml Rules
+- Single service 'app'.
+- Named volumes: sqlite_data:/app/data, artifacts_data:/app/volumes/artifacts.
+- JOBS_WORKDIR (/app/volumes/jobs) intentionally NOT a named volume (ephemeral).
+- restart: unless-stopped
+- env_file: .env for production deployment.
+
+## Known Limitations (DO NOT try to fix these in MVP)
+- [KNOWN_LIMITATION] Multi-page landings: only index.html is processed. Secondary HTML
+  files are included in ZIP unprocessed.
+- [KNOWN_LIMITATION] Pipeline resume on crash not supported. EC-16 resets to failed.
+- [KNOWN_LIMITATION] JS string concatenation class replacement not supported (no AST parser).
+  Only the 6 JS_REPLACE_PATTERNS are handled.
+- [FUTURE] aggression_level per-job parameter.
+- [FUTURE] Multiple parallel workers (Celery/ARQ).
+- [FUTURE] Custom user prompts for AI module.
+- [FUTURE] Authentication / multi-user.

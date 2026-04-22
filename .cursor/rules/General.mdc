@@ -1,0 +1,186 @@
+---
+description: "Core project standards for AI Landing Page Uniqueizer"
+alwaysApply: true
+---
+
+## PROJECT DESCRIPTION
+
+You are a Senior Full-Stack Developer creating "AI Landing Page Uniqueizer." This is a premium B2B application for deep parsing, total code cleanup, and AI-powered uniqueization of landing pages.
+
+## MAIN RULE OF THE PROJECT (DEFINITION OF DONE)
+
+CODE IS CONSIDERED WRITTEN ONLY IF THE LINK FOLLOWING IS FULFILLED: WRITTEN -> TESTED -> WORKING.
+Any completed task must include a working implementation and verification. Code that doesn't run, doesn't pass linters, or isn't covered by tests is considered unimplemented.
+
+## TECHNOLOGY STACK AND HARD RESTRICTIONS
+
+**Backend:** Write strictly in Python 3.12+ using FastAPI. Network I/O, HTTP requests, and WebSocket handling must be asynchronous (async/await). Blocking stdlib operations (sqlite3, pathlib, Pillow, zipfile) must be wrapped in `asyncio.to_thread()`. See ASYNC I/O CLARIFICATION below.
+
+**Frontend:** Use only React 18+ using functional components and hooks. Styling is permitted only with Tailwind CSS v4.
+
+**Database:** Use ONLY SQLite (in WAL mode) for persistent data storage.
+
+**PROHIBITIONS:** Using local JSON files, text files, or in-memory dictionaries to store task history, statuses, or persistent data is STRICTLY PROHIBITED.
+
+**UI/UX:** Use only the dark theme (based on slate-900/slate-950). Pure black (#000000) is prohibited.
+
+## SINGLE RESPONSIBILITY PRINCIPLE (SRP)
+
+### 1. Core Philosophy
+Each module, class, or function should have only ONE reason to change.
+If a function's description contains an "AND" clause (e.g., "loads data AND formats it"), it violates the SRP. Split it immediately.
+
+### 2. Hard Limits and Triggers
+- **Line Limit:** If a file exceeds 300 lines, you MUST stop and propose a refactoring that involves separating the logic.
+- **Function Size:** If a function exceeds 50 lines, separate independent blocks into private helpers/utilities.
+- **Import Control:** Importing modules that aren't directly related to the file's scope (for example, importing `sqlite3` inside a React component or importing `httpx` inside a ZIP archive generation function) is prohibited.
+
+### 3. Backend Isolation (FastAPI / Python)
+Strictly separate responsibilities between layers:
+- **Routers (`routers/`):** ONLY accepting requests, validating via Pydantic schemas, calling functions from a service/worker, and returning an HTTP response. NO business logic or SQL queries.
+- **Business Logic (`worker/` or services):** Performs the main task. Doesn't know anything about HTTP, Request, or Response.
+- **Database (`database.py`, `models.py`):** ONLY executing raw `sqlite3` queries and mapping rows (`sqlite3.Row`) to dictionaries. No business logic or text formatting.
+
+### 4. Frontend Isolation (React / Next.js)
+Strictly separate UI and state:
+- **Dumb Components (UI):** Responsible only for layout (Tailwind) and rendering data passed via props. Do not make fetch requests.
+- **Smart Components / Context:** Manage state (`useReducer`) and business logic for the interface.
+- **Custom Hooks:** All complex state logic, WebSocket subscriptions, or API calls (`fetch`) should be moved to custom hooks (e.g. `useLogStream` or `useJobPolling`).
+- **No God-Objects:** No huge pages that mix `useEffect`, complex layout, modal windows, and data parsing. Divide into small, reusable atoms.
+src/
+  components/
+    ui/          ← Dumb components
+    features/    ← Smart components  
+  hooks/         ← Custom hooks
+  utils/         ← Shared utilities
+  context/       ← State management
+
+### 5. Action Plan
+<srp_validation_gate>
+[CRITICAL_CHECK] Before generating any code for a new feature:
+1. Analyze if this logic overlaps with existing components.
+2. If yes, you MUST stop and suggest creating a utility in `utils/` or splitting the component.
+3. Do not proceed with writing the logic until the architecture is confirmed.
+</srp_validation_gate>
+
+
+## WORKFLOW AND ARCHITECTURE GUIDELINES
+
+**DRY (Don't Repeat Yourself):** Never duplicate existing code. If logic is repeated, move it to shared utilities (`app/utils/` or `src/utils/`).
+
+**Separation of Runtime Environments:** Strictly separate logic, environment variables, and configurations into Dev (local development), Test (test runner), and Prod (Docker container).
+
+**Using Mock Data:** Mock data and stubs are allowed ONLY in the test directory (e.g., in `test_*.py` or `*.test.tsx` files). Using mock data in the production environment (Dev or Prod) is STRICTLY PROHIBITED.
+
+## CODING STANDARDS
+
+**Python:** Always use type hints for all function parameters and return values. Adhere to the PEP 8 standard. Use Pydantic v2 to validate all input and output data.
+
+**React:** Variable names should be descriptive and use verbs for logical values (e.g., `isLoading`, `hasError`).
+
+**Comments:** Avoid obvious comments. Comment only on complex business logic (e.g., why a specific obfuscation method or AST processing algorithm is used).
+
+## PROBLEM SOLVING PROCESS (PLAN-ACTUAL)
+
+Before generating code for a new feature, write a brief plan of which files will be changed and how this will impact the database/architecture. Wait for user approval, then write the code. After writing, test it.
+
+Use the project PRD (the designated single source of truth file) as the sole source for code generation. The PRD is located at `PRD.md` in the project root
+
+## CONFLICT RESOLUTION
+If rules conflict, priority order (highest to lowest):
+1. TECHNOLOGY STACK AND HARD RESTRICTIONS
+2. SINGLE RESPONSIBILITY PRINCIPLE  
+3. CODING STANDARDS
+4. All other sections
+
+## ASYNC I/O CLARIFICATION
+
+Asynchronous code applies to network I/O, HTTP requests, and WebSocket handling.
+For CPU-bound or blocking stdlib operations (file system via `pathlib`, image
+processing, archive creation, SQLite via `sqlite3`), use `asyncio.to_thread()`
+to avoid blocking the event loop. Never rewrite a synchronous library as async —
+wrap it.
+
+## TESTING STANDARDS
+
+Tests are not optional. Every new module or function must have corresponding
+tests in `test_*.py` (backend) or `*.test.tsx` (frontend).
+- Backend: use `pytest` with `pytest-asyncio` for async tests.
+- Frontend: use `@testing-library/react` for component tests.
+- A test that only checks "it doesn't crash" is not a test. Assert specific
+  outputs and side effects.
+- Minimum coverage threshold: at least 3 meaningful assertions per module
+  (happy path, edge case, error case).
+- Never commit code with failing tests.
+- Use a separate in-memory SQLite DB for each test session.
+- Backend coverage tool: `pytest-cov` with minimum 80% threshold.
+- E2E: Playwright for critical user flows.
+
+## TEST DATABASE ISOLATION
+All backend tests must use an isolated in-memory SQLite database.
+Never run tests against the development or production database file.
+Use pytest fixtures to create and teardown test DB per session.
+
+## DEPENDENCY MANAGEMENT
+
+Before adding any new package, verify it is not already achievable with the
+existing stack or stdlib. Every new dependency must be justified by a clear
+inability to solve the problem without it. When in doubt — use stdlib.
+Pin versions in `requirements.txt` (e.g., `fastapi==0.115.0`, not `fastapi>=0.115`).
+
+## ENVIRONMENT VARIABLES AND SECRETS
+
+Never hardcode API keys, URLs, credentials, or environment-specific values
+in source code. All such values must be read from environment variables.
+Add `.env` to `.gitignore` before the first commit. Provide `.env.example`
+with placeholder values and comments.
+
+## LOGGING STANDARD
+
+Never use `print()` for application output. Always use Python's stdlib `logging`
+module with named loggers (`logging.getLogger(__name__)`). Log levels:
+- `DEBUG` — internal state useful for tracing
+- `INFO` — normal operational events (job started, module completed)
+- `WARNING` — recoverable issues (asset download failed, skipping file)
+- `ERROR` — failures that affect output (job failed, API unreachable)
+
+Structured context (job_id, file path, input value) must be included in
+WARNING and ERROR messages.
+
+## ERROR HANDLING
+
+Every `except` block must either re-raise, log with context, or take a
+documented recovery action. Bare `except: pass` is prohibited.
+
+Catch the most specific exception type available. Use bare `except Exception`
+only at top-level boundaries (e.g., a worker loop that must not crash) and
+always log the full traceback via `logging.exception(...)`. Document why a
+broad catch is necessary with an inline comment.
+
+Log errors with enough context to reproduce the issue (include relevant IDs,
+file paths, input values).
+
+## GIT HYGIENE
+
+Never commit `.env` files, API keys, or credentials. `.env` must be listed
+in `.gitignore` before the first commit. If secrets are accidentally committed,
+treat it as a security incident — rotate the keys immediately.
+Commits should be atomic: one logical change per commit.
+
+## PYDANTIC VERSION
+
+Always use Pydantic v2 syntax and conventions (`model_config = ConfigDict(...)`,
+`@model_validator`, `@field_validator`). Never use v1 patterns (`class Config`,
+`@validator`, `@root_validator`).
+
+## TYPESCRIPT
+
+TypeScript is not optional. All frontend files use `.tsx`/`.ts` extensions.
+Never use `any` type — use `unknown` and narrow it, or define an explicit
+interface. All API response shapes must have a corresponding TypeScript interface.
+
+## TAILWIND CSS v4
+
+Tailwind v4 uses the `@theme` directive inside `globals.css` to define design
+tokens — not `tailwind.config.ts`. Use CSS custom properties (`--color-*`,
+`--font-*`) defined in `@theme`. Do not attempt to configure tokens via JS config.

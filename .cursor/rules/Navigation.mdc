@@ -1,0 +1,51 @@
+---
+description: "This project uses PRD_MAP.md, PRD_INDEX.md, and PRD_FILES.md as the navigation layer over PRD.md"
+alwaysApply: true
+---
+
+
+# BEFORE WRITING CODE — CHECKLIST
+
+## 1. Identification
+[ ] Which module? (M1–M7 / WS / B* / I*)
+[ ] Is this a pipeline step or infrastructure?
+
+## 2. Dependencies
+[ ] Which DB tables are used?
+[ ] Which settings are read?
+[ ] Which input/output folders are used?
+
+## 3. Contracts
+[ ] Statuses only: pending | running | done | failed
+[ ] logs.level only: info | warn | error
+[ ] WebSocket format unchanged
+[ ] DDL matches §3.2
+
+## 4. GAP
+[ ] Is there a GAP for this part?
+[ ] Does the solution violate GAP-G or GAP-M?
+
+## 5. Edge Cases
+[ ] Are EC from §6 verified?
+
+---
+
+# RESPONSE MUST START WITH:
+
+Module:  
+PRD Section:  
+Dependencies:  
+GAP:  
+Edge Cases:  
+
+---
+
+# FORBIDDEN
+
+- Adding new statuses
+- Using ORM
+- Creating a global queue instead of JOB_QUEUES
+- Changing WS format
+- Using sha256_hash instead of hash
+- Using completed instead of done
+- Setting noise_intensity > 0.01

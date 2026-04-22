@@ -1,0 +1,113 @@
+---
+description: Frontend rules for all TypeScript, TSX, and CSS files under frontend/. Enforces exact design token values in oklch() format, strict 4-state JobStatusBadge mapping, WebSocket message handling protocol with mandatory type='done' check, prohibition of all external state managers, App Router structure, component specifications, and typography scale. Apply whenever editing or generating any frontend file.
+globs: frontend/**/*.{ts,tsx,css}
+alwaysApply: false
+---
+
+# FRONTEND — Next.js / React
+
+## Framework & Versions
+- Next.js 14 with App Router. Never use Pages Router.
+- React 18.
+- Tailwind CSS v4 with @theme directive in globals.css (not tailwind.config.js).
+- TypeScript.
+- framer-motion for ProgressBar animation only.
+
+## App Directory Structure (exact)
+frontend/
+├── app/
+│   ├── layout.tsx           # Root layout: bg-bg-primary, font-sans, data-theme="dark"
+│   ├── page.tsx             # Redirect to /dashboard
+│   ├── dashboard/page.tsx   # JobInputPanel + JobList
+│   ├── jobs/[id]/page.tsx   # ProgressView + LogViewer
+│   ├── settings/page.tsx    # SettingsForm
+│   └── not-found.tsx        # 404 page
+└── components/
+    ├── JobInputPanel.tsx
+    ├── JobCard.tsx
+    ├── JobStatusBadge.tsx
+    ├── ProgressBar.tsx
+    ├── LogViewer.tsx
+    ├── SettingsForm.tsx
+    ├── SkeletonCard.tsx
+    └── DownloadButton.tsx
+
+## Design Token System (Tailwind CSS v4 @theme in globals.css — exact values)
+--color-bg-primary:     oklch(14.5% 0.018 264)   /* #0F172A Slate-950 */
+--color-bg-secondary:   oklch(20.5% 0.022 264)   /* #1E293B Slate-800 */
+--color-accent:         oklch(56.9% 0.196 264)   /* #3B82F6 Blue-500  */
+--color-accent-hover:   oklch(51.9% 0.196 264)   /* #2563EB Blue-600  */
+--color-text-primary:   oklch(97.8% 0.004 264)   /* #F8FAFC Slate-50  */
+--color-text-secondary: oklch(61.5% 0.045 264)   /* #94A3B8 Slate-400 */
+--color-border:         oklch(26%   0.025 264)   /* #334155 Slate-700 */
+--color-error:          oklch(57.7% 0.215 27.3)  /* #EF4444 Red-500   */
+--color-success:        oklch(64.5% 0.148 160)   /* #22C55E Green-500 */
+--color-warn:           oklch(76.9% 0.162 70.6)  /* #F59E0B Amber-400 */
+--font-sans: 'Inter', system-ui, sans-serif
+--radius-card: 0.75rem
+
+## State Management Rules
+- Use React Context + useReducer. Never Redux, Zustand, Jotai, or Recoil.
+- JobsContext actions: ADD_JOB | UPDATE_JOB_STATUS | SET_JOBS | DELETE_JOB.
+- Local component state via useState for UI-only concerns.
+
+## API Communication Rules
+- Use native fetch exclusively. Never axios or any HTTP library.
+- API base URL from env: NEXT_PUBLIC_API_URL (default: http://localhost:8000)
+- WebSocket URL from env: NEXT_PUBLIC_WS_URL (default: ws://localhost:8000)
+
+## Component Rules
+
+### JobInputPanel
+- State: url: string, isLoading: boolean, error: string | null
+- NO AggressionSelector. aggression_level does not exist in this UI.
+- On submit: POST /api/jobs → router.push(`/jobs/${response.id}`)
+- Error display: show under submit button if error !== null, className="text-error text-sm mt-2 text-center"
+- Error source: body.detail ?? `Error ${res.status}` or "Network error, please try again"
+
+### JobStatusBadge
+- Exactly 4 status mappings (no others):
+  pending → { label: 'Queued',     color: 'text-text-secondary bg-border'  }
+  running → { label: 'Processing', color: 'text-warn bg-warn/10'           }
+  done    → { label: 'Done',       color: 'text-success bg-success/10'     }
+  failed  → { label: 'Failed',     color: 'text-error bg-error/10'         }
+
+### ProgressBar
+- Uses framer-motion: motion.div animate={{ width: `${progress_pct}%` }}
+  transition={{ duration: 0.8, ease: "easeInOut" }}
+- STATUS_LABELS defined in ProgressBar.tsx:
+  pending='Waiting in queue', running='Processing...', done='Completed', failed='Failed'
+- STATUS_LABELS is separate from STATUS_CONFIG in JobStatusBadge.
+
+### LogViewer
+- State: logs: string[], wsStatus: 'connecting'|'connected'|'closed'
+- WebSocket messages: type='log' → append log. type='done' → read data.status,
+  setWsStatus('closed'), ws.close().
+- Log level prefix colors: info → text-accent, warn → text-warn, error → text-error.
+- Auto-scroll: useRef on container, scrollTop = scrollHeight on each new log.
+- Skeleton at wsStatus='connecting': show <SkeletonCard lines={5} />.
+- Polling fallback: useInterval(() => fetchJob(id), 3000) when WS unavailable or closed
+  (only if job not done/failed).
+
+### SettingsForm
+- API key fields: type="password" with show/hide toggle.
+- Save active only if isDirty.
+- Success: temporary toast "Settings saved" via setTimeout 2000ms.
+
+### SkeletonCard
+- Uses Tailwind animate-pulse. No framer-motion.
+
+### DownloadButton
+- Renders only if job.status === 'done'.
+
+### not-found.tsx
+- On 404 from GET /api/jobs/{id}: call notFound() from next/navigation.
+- Container: "flex flex-col items-center justify-center min-h-screen bg-bg-primary"
+- Link to /dashboard: className includes text-accent hover:text-accent-hover
+
+## Typography (apply via Tailwind classes — exact)
+- H1: text-2xl font-semibold text-text-primary tracking-tight
+- H2: text-lg font-medium text-text-primary
+- Body: text-sm text-text-primary leading-relaxed
+- Caption: text-xs text-text-secondary
+- Mono (logs, URLs): font-mono text-xs text-text-secondary

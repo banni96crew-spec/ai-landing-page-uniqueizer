@@ -1,0 +1,52 @@
+---
+alwaysApply: true
+---
+# Global Rules — AI Landing Page Uniqueizer
+## Identity & Authority
+- This project is called "AI Landing Page Uniqueizer". Never rename it.
+- The PRD is the single source of truth. Do not introduce architecture, libraries,
+  or design patterns that are not explicitly mentioned in the PRD.
+- All variable names, route names, component names, and file names defined in the PRD
+  are FINAL. Do not rename without an explicit [RENAME_OK] annotation in the PRD.
+- When sections conflict: Section 3 (Technical Architecture) > Section 4 (Module Specs)
+  > Section 2 (Core Logic) > all other sections.
+
+## Forbidden Libraries & Patterns (never introduce these)
+- NEVER use SQLAlchemy, Alembic, Tortoise ORM, or any ORM. Database layer uses raw
+  stdlib sqlite3 exclusively.
+- NEVER use Redis, Celery, ARQ, RQ, or any external task queue. The worker is a single
+  asyncio.Task with a while True polling loop.
+- NEVER use supervisord, pm2, or process managers. entrypoint.sh uses bash & + wait.
+- NEVER use Redux, Zustand, Jotai, Recoil, or any external state management library.
+  State is managed with React Context + useReducer only.
+- NEVER use axios. All HTTP calls in the frontend use the native fetch API.
+- NEVER use cssutils. CSS class extraction uses stdlib re (regex) exclusively.
+- NEVER use Celery, APScheduler, or any scheduler. The worker polls the DB every
+  WORKER_POLL_INTERVAL seconds inside a single while True loop.
+- NEVER add aggression_level parameter to any API endpoint, DB schema, or UI component.
+  It was removed in [FIX v1.1] and is marked [FUTURE].
+- NEVER add authentication, multi-user support, or session management. MVP is single-user,
+  no auth.
+- NEVER use Pages Router in Next.js. Use App Router exclusively.
+- NEVER import runner.py from main.py directly. main.py only calls asyncio.create_task(worker_loop()).
+
+## Job Status Machine (4 states only — no intermediate states)
+- Valid job statuses are EXACTLY: 'pending', 'running', 'done', 'failed'.
+- DO NOT use 'completed', 'scraping', 'mutating', 'rewriting', 'processing_media',
+  'packing', or any other status string.
+- Status transitions: pending → running → done | failed. No other transitions.
+- 'done' is the only successful terminal state. Never use 'completed'.
+
+## Error Handling Philosophy
+- Any unhandled exception in the pipeline sets jobs.status = 'failed' and writes
+  error_message to the DB.
+- The worker loop itself must NEVER crash. Catch all exceptions, log them, and continue.
+- On container restart, EC-16 must reset all status='running' jobs to status='failed'
+  with error_message='Worker interrupted'. This runs in the lifespan startup hook.
+
+## Logging
+- Log levels in DB are lowercase: 'info', 'warn', 'error'. Never uppercase.
+- Module completion is signaled by writing one of the MODULE_DONE_MARKERS constants
+  to the logs table: MODULE_SCRAPER_DONE, MODULE_DOM_MUTATOR_DONE,
+  MODULE_AI_REWRITER_DONE, MODULE_MEDIA_UNIQUEIZER_DONE, MODULE_PACKER_DONE.
+- progress_pct = COUNT(MODULE_DONE_MARKERS for job) * 18. done=100, pending/failed=0.

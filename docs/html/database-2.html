@@ -1,0 +1,258 @@
+
+<style>
+* { box-sizing: border-box; }
+.wrap { padding: 12px 0; font-family: var(--font-sans); }
+.cols { display: flex; gap: 0; align-items: stretch; }
+.col { flex: 1; display: flex; flex-direction: column; gap: 0; }
+.col-label { font-size: 11px; font-weight: 500; letter-spacing: 0.07em; text-transform: uppercase; color: var(--color-text-tertiary); text-align: center; margin-bottom: 10px; }
+.actor {
+  border: 0.5px solid var(--color-border-secondary);
+  border-radius: var(--border-radius-lg);
+  padding: 10px 14px;
+  margin: 0 6px;
+  background: var(--color-background-secondary);
+  text-align: center;
+}
+.actor-name { font-size: 13px; font-weight: 500; color: var(--color-text-primary); }
+.actor-sub { font-size: 11px; color: var(--color-text-tertiary); margin-top: 2px; }
+
+.db-col { flex: 0 0 200px; display: flex; flex-direction: column; align-items: center; padding: 0 8px; }
+.db-box {
+  width: 100%;
+  border: 0.5px solid;
+  border-radius: var(--border-radius-md);
+  padding: 8px 10px;
+  margin: 3px 0;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  text-align: center;
+}
+.db-box:hover { border-color: var(--color-border-primary); }
+.db-box.active { border-color: var(--color-border-primary); background: var(--color-background-primary); }
+.db-name { font-size: 12px; font-weight: 500; }
+.db-note { font-size: 10px; margin-top: 2px; }
+
+.purple-box { border-color: #AFA9EC; background: #EEEDFE; }
+.purple-box .db-name { color: #3C3489; }
+.purple-box .db-note { color: #534AB7; }
+@media (prefers-color-scheme: dark) {
+  .purple-box { border-color: #534AB7; background: #26215C; }
+  .purple-box .db-name { color: #AFA9EC; }
+  .purple-box .db-note { color: #7F77DD; }
+}
+.amber-box { border-color: #EF9F27; background: #FAEEDA; }
+.amber-box .db-name { color: #633806; }
+.amber-box .db-note { color: #854F0B; }
+@media (prefers-color-scheme: dark) {
+  .amber-box { border-color: #854F0B; background: #412402; }
+  .amber-box .db-name { color: #EF9F27; }
+  .amber-box .db-note { color: #BA7517; }
+}
+.teal-box { border-color: #5DCAA5; background: #E1F5EE; }
+.teal-box .db-name { color: #085041; }
+.teal-box .db-note { color: #0F6E56; }
+@media (prefers-color-scheme: dark) {
+  .teal-box { border-color: #0F6E56; background: #04342C; }
+  .teal-box .db-name { color: #5DCAA5; }
+  .teal-box .db-note { color: #1D9E75; }
+}
+.gray-box { border-color: var(--color-border-secondary); background: var(--color-background-secondary); }
+.gray-box .db-name { color: var(--color-text-primary); }
+.gray-box .db-note { color: var(--color-text-tertiary); }
+
+.arrows { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 6px; padding: 0 4px; min-width: 44px; }
+.arr-row { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.arr-label { font-size: 10px; color: var(--color-text-tertiary); white-space: nowrap; }
+.arr-svg { width: 36px; height: 14px; }
+
+.divider { height: 0.5px; background: var(--color-border-tertiary); margin: 14px 0; }
+
+.detail { border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-lg); padding: 12px 14px; background: var(--color-background-secondary); margin-top: 12px; }
+.detail-title { font-size: 13px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 5px; }
+.detail-body { font-size: 12px; color: var(--color-text-secondary); line-height: 1.6; }
+.code { font-family: var(--font-mono); font-size: 11px; background: var(--color-background-tertiary); border: 0.5px solid var(--color-border-tertiary); border-radius: 6px; padding: 6px 10px; color: var(--color-text-secondary); margin-top: 8px; display: block; white-space: pre; overflow-x: auto; }
+
+.pragma-row { display: flex; gap: 8px; margin-top: 12px; }
+.pragma { flex: 1; border: 0.5px solid var(--color-border-tertiary); border-radius: var(--border-radius-md); padding: 9px 11px; background: var(--color-background-secondary); }
+.pragma-title { font-size: 12px; font-weight: 500; color: var(--color-text-primary); }
+.pragma-sub { font-size: 11px; color: var(--color-text-tertiary); margin-top: 3px; line-height: 1.4; }
+
+.status-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.status-pill { font-size: 11px; font-weight: 500; padding: 3px 10px; border-radius: 20px; border: 0.5px solid; }
+.s-pending { color: #854F0B; border-color: #EF9F27; background: #FAEEDA; }
+.s-running { color: #185FA5; border-color: #85B7EB; background: #E6F1FB; }
+.s-done    { color: #3B6D11; border-color: #97C459; background: #EAF3DE; }
+.s-failed  { color: #A32D2D; border-color: #F09595; background: #FCEBEB; }
+@media (prefers-color-scheme: dark) {
+  .s-pending { color: #EF9F27; border-color: #854F0B; background: #412402; }
+  .s-running { color: #85B7EB; border-color: #185FA5; background: #042C53; }
+  .s-done    { color: #97C459; border-color: #3B6D11; background: #173404; }
+  .s-failed  { color: #F09595; border-color: #A32D2D; background: #501313; }
+}
+
+.ssot-note { font-size: 11px; color: var(--color-text-tertiary); margin-top: 14px; line-height: 1.55; }
+.ssot-note code { font-family: var(--font-mono); font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--color-background-tertiary); border: 0.5px solid var(--color-border-tertiary); }
+</style>
+
+<div class="wrap">
+  <div class="cols">
+    <div class="col">
+      <div class="col-label">FastAPI</div>
+      <div class="actor">
+        <div class="actor-name">HTTP server</div>
+        <div class="actor-sub">Async handlers (uvicorn)</div>
+      </div>
+    </div>
+
+    <div class="arrows" style="margin-top:28px">
+      <div class="arr-row">
+        <div class="arr-label">INSERT</div>
+        <svg class="arr-svg" viewBox="0 0 36 14"><line x1="2" y1="7" x2="30" y2="7" stroke="var(--color-text-tertiary)" stroke-width="1"/><path d="M26 3L32 7L26 11" fill="none" stroke="var(--color-text-tertiary)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="arr-row" style="margin-top:4px">
+        <svg class="arr-svg" viewBox="0 0 36 14"><line x1="34" y1="7" x2="6" y2="7" stroke="var(--color-text-tertiary)" stroke-width="1"/><path d="M10 3L4 7L10 11" fill="none" stroke="var(--color-text-tertiary)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div class="arr-label">SELECT</div>
+      </div>
+    </div>
+
+    <div class="db-col">
+      <div class="col-label">SQLite file</div>
+      <div class="db-box purple-box" id="tb-jobs" onclick="showDetail('jobs')">
+        <div class="db-name">jobs</div>
+        <div class="db-note">Queue &amp; status</div>
+      </div>
+      <div class="db-box teal-box" id="tb-artifacts" onclick="showDetail('artifacts')">
+        <div class="db-name">artifacts</div>
+        <div class="db-note">ZIP metadata</div>
+      </div>
+      <div class="db-box amber-box" id="tb-logs" onclick="showDetail('logs')">
+        <div class="db-name">logs</div>
+        <div class="db-note">Per-job events</div>
+      </div>
+      <div class="db-box gray-box" id="tb-settings" onclick="showDetail('settings')">
+        <div class="db-name">settings</div>
+        <div class="db-note">API keys &amp; config</div>
+      </div>
+    </div>
+
+    <div class="arrows" style="margin-top:28px">
+      <div class="arr-row">
+        <div class="arr-label">poll</div>
+        <svg class="arr-svg" viewBox="0 0 36 14"><line x1="34" y1="7" x2="6" y2="7" stroke="var(--color-text-tertiary)" stroke-width="1"/><path d="M10 3L4 7L10 11" fill="none" stroke="var(--color-text-tertiary)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="arr-row" style="margin-top:4px">
+        <svg class="arr-svg" viewBox="0 0 36 14"><line x1="2" y1="7" x2="30" y2="7" stroke="var(--color-text-tertiary)" stroke-width="1"/><path d="M26 3L32 7L26 11" fill="none" stroke="var(--color-text-tertiary)" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div class="arr-label">UPDATE</div>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="col-label">Worker</div>
+      <div class="actor">
+        <div class="actor-name">asyncio.Task</div>
+        <div class="actor-sub">Same OS process as FastAPI · pipeline loop</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="detail" id="detail-panel">
+    <div class="detail-title" id="detail-title">Click a table to see its schema and purpose</div>
+    <div class="detail-body" id="detail-body">Coordination happens through a single SQLite file (not OS-level IPC). FastAPI and the worker coroutine share that file under WAL. Click a table above.</div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div style="font-size:11px;font-weight:500;letter-spacing:0.07em;text-transform:uppercase;color:var(--color-text-tertiary);margin-bottom:8px">jobs.status lifecycle</div>
+  <div class="status-row">
+    <span class="status-pill s-pending">pending</span>
+    <span style="font-size:13px;color:var(--color-text-tertiary);align-self:center">→</span>
+    <span class="status-pill s-running">running</span>
+    <span style="font-size:13px;color:var(--color-text-tertiary);align-self:center">→</span>
+    <span class="status-pill s-done">done</span>
+    <span style="font-size:13px;color:var(--color-text-tertiary);align-self:center">or</span>
+    <span class="status-pill s-failed">failed</span>
+  </div>
+
+  <div class="divider"></div>
+
+  <div style="font-size:11px;font-weight:500;letter-spacing:0.07em;text-transform:uppercase;color:var(--color-text-tertiary);margin-bottom:8px">SQLite configuration</div>
+  <div class="pragma-row">
+    <div class="pragma">
+      <div class="pragma-title">WAL journal mode</div>
+      <div class="pragma-sub">Worker INSERTs logs while FastAPI reads status or streams rows — readers/writers cooperate without exclusive DB locks typical of DELETE mode.</div>
+      <code class="code" style="display:block;margin-top:6px;font-size:10px">PRAGMA journal_mode=WAL;</code>
+    </div>
+    <div class="pragma">
+      <div class="pragma-title">FIFO composite index</div>
+      <div class="pragma-sub">Worker picks the oldest pending row using (status, created_at) without scanning the whole table.</div>
+      <code class="code" style="display:block;margin-top:6px;font-size:10px">CREATE INDEX idx_jobs_status_created_at
+  ON jobs (status, created_at);</code>
+    </div>
+  </div>
+
+  <div class="ssot-note">
+    <strong>Source of truth (text):</strong> <code>Claude_v1.1_fixed.txt</code> §3.2 (DDL) and §4 (M* requirements).
+    After codegen, apply the same schema via <code>backend/migrations/001_init.sql</code> (path per PRD §3.2).
+  </div>
+</div>
+
+<script>
+const details = {
+  jobs: {
+    title: "jobs — queue and status store",
+    body: "Shared queue and state. FastAPI INSERTs a row on each submission (status = 'pending'). The worker loop polls with SELECT … WHERE status = 'pending' ORDER BY created_at LIMIT 1, then should claim the row with an atomic UPDATE … WHERE id=? AND status='pending' (rowcount check) before setting 'running'. On completion: 'done' or 'failed'. Intermediate pipeline progress is <em>not</em> stored in jobs.status — use the logs table. Poll interval: WORKER_POLL_INTERVAL (default 2s).",
+    code: `CREATE TABLE IF NOT EXISTS jobs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_url      TEXT    NOT NULL,
+    status          TEXT    NOT NULL DEFAULT 'pending',
+    error_message   TEXT,
+    created_at      DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at      DATETIME NOT NULL DEFAULT (datetime('now'))
+);`
+  },
+  artifacts: {
+    title: "artifacts — ZIP archive metadata",
+    body: "Stores path/size/hash for the output ZIP under /volumes/artifacts (PRD). There is <strong>no UNIQUE constraint on job_id</strong> in SQL (ER cardinality 0..1 is by convention); the application should insert at most one artifact per successful job (see EC-17 in PRD). Download uses GET /api/artifacts/{job_id}/download when jobs.status = 'done'.",
+    code: `CREATE TABLE IF NOT EXISTS artifacts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL REFERENCES jobs(id),
+    file_path   TEXT    NOT NULL,
+    file_size   INTEGER,
+    hash        TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);`
+  },
+  logs: {
+    title: "logs — per-job debug log",
+    body: "Each pipeline module appends rows (level 'info' | 'warn' | 'error', lowercase). Under WAL, worker INSERTs can overlap with API SELECTs for tailing or WebSocket broadcast. progress_pct in the API is derived from log/module completion, not from jobs.status granularity.",
+    code: `CREATE TABLE IF NOT EXISTS logs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id      INTEGER NOT NULL REFERENCES jobs(id),
+    level       TEXT    NOT NULL DEFAULT 'info',
+    message     TEXT    NOT NULL,
+    timestamp   DATETIME DEFAULT CURRENT_TIMESTAMP
+);`
+  },
+  settings: {
+    title: "settings — key/value config store",
+    body: "Global key/value (API keys, ai_provider, noise_intensity, etc.). No FK to jobs. Batch updates via PUT /api/settings use INSERT OR REPLACE per row. Values are read when a job starts; changes apply to the next run.",
+    code: `CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT NOT NULL,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+-- Example (never commit real secrets):
+INSERT OR REPLACE INTO settings (key, value)
+VALUES ('openai_api_key', '<paste_key_in_settings_ui>');`
+  }
+};
+
+function showDetail(key) {
+  document.querySelectorAll('.db-box').forEach(b => b.classList.remove('active'));
+  document.getElementById('tb-' + key).classList.add('active');
+  const d = details[key];
+  document.getElementById('detail-title').textContent = d.title;
+  document.getElementById('detail-body').innerHTML =
+    d.body + '<code class="code">' + d.code + '</code>';
+}
+</script>
