@@ -8,15 +8,8 @@ from fastapi.responses import JSONResponse
 
 from backend.config import BLOCKED_IP_PREFIXES, MAX_QUEUE_SIZE, get_artifact_path, get_job_dir
 from backend.database import get_connection
+from backend.job_progress import calculate_progress_pct
 from backend.schemas import ArtifactResponse, JobCreateRequest, JobDetailResponse, JobResponse
-
-MODULE_DONE_MARKERS: tuple[str, ...] = (
-    "MARKER:scraper_done",
-    "MARKER:mutator_done",
-    "MARKER:rewriter_done",
-    "MARKER:media_done",
-    "MARKER:packer_done",
-)
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -110,18 +103,7 @@ def get_job(job_id: int) -> JobDetailResponse:
             (job_id,),
         ).fetchone()
 
-        if job["status"] == "pending":
-            progress_pct = 0
-        elif job["status"] == "done":
-            progress_pct = 100
-        else:
-            placeholders = ", ".join("?" for _ in MODULE_DONE_MARKERS)
-            progress_row = conn.execute(
-                f"SELECT COUNT(*) AS done_count FROM logs "
-                f"WHERE job_id = ? AND message IN ({placeholders})",
-                (job_id, *MODULE_DONE_MARKERS),
-            ).fetchone()
-            progress_pct = int(progress_row["done_count"]) * 20
+        progress_pct = calculate_progress_pct(conn, job_id, str(job["status"]))
 
         response_payload = {
             "id": job["id"],

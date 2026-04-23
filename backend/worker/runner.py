@@ -3,8 +3,9 @@ import logging
 from typing import Any
 
 from backend.config import JOB_TIMEOUT_SECONDS, WORKER_POLL_INTERVAL
-from backend.database import get_connection, log_message
+from backend.database import get_connection
 from backend.state import JOB_QUEUES
+from backend.worker.pipeline import log_job_message, mark_job_failed, run_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -19,97 +20,42 @@ MODULE_DONE_MARKERS = {
 
 def _claim_next_pending_job_sync() -> dict[str, Any] | None:
     conn = get_connection()
-
-    row = conn.execute(
-        """
-        SELECT *
-        FROM jobs
-        WHERE status = ?
-        ORDER BY created_at ASC
-        LIMIT 1
-        """,
-        ("pending",),
-    ).fetchone()
-
-    if row is None:
-        conn.close()
-        return None
-
-    job_id = row["id"]
-    cursor = conn.execute(
-        """
-        UPDATE jobs
-        SET status = ?
-        WHERE id = ? AND status = ?
-        """,
-        ("running", job_id, "pending"),
-    )
-
-    if cursor.rowcount != 1:
-        conn.close()
-        return None
-
-    conn.commit()
-    conn.close()
-    return dict(row)
-
-
-def _mark_done_sync(job_id: int) -> None:
-    conn = get_connection()
-    conn.execute(
-        """
-        UPDATE jobs
-        SET status = ?, error_message = NULL
-        WHERE id = ? AND status = ?
-        """,
-        ("done", job_id, "running"),
-    )
-    conn.commit()
-    conn.close()
-
-
-def _mark_failed_sync(job_id: int, error_message: str) -> None:
-    conn = get_connection()
-    conn.execute(
-        """
-        UPDATE jobs
-        SET status = ?, error_message = ?
-        WHERE id = ? AND status = ?
-        """,
-        ("failed", error_message, job_id, "running"),
-    )
-    conn.commit()
-    conn.close()
-
-
-def _log_sync(job_id: int, level: str, message: str) -> None:
-    conn = get_connection()
     try:
-        log_message(conn, job_id, level, message)
+        row = conn.execute(
+            """
+            SELECT *
+            FROM jobs
+            WHERE status = ?
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            ("pending",),
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        job_id = row["id"]
+        cursor = conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?
+            WHERE id = ? AND status = ?
+            """,
+            ("running", job_id, "pending"),
+        )
+
+        if cursor.rowcount != 1:
+            return None
+
+        conn.commit()
+        return dict(row)
     finally:
         conn.close()
 
 
 async def claim_next_pending_job() -> dict[str, Any] | None:
     return await asyncio.to_thread(_claim_next_pending_job_sync)
-
-
-async def _mark_done(job_id: int) -> None:
-    await asyncio.to_thread(_mark_done_sync, job_id)
-
-
-async def _mark_failed(job_id: int, error_message: str) -> None:
-    await asyncio.to_thread(_mark_failed_sync, job_id, error_message)
-
-
-async def _log(job_id: int, level: str, message: str) -> None:
-    await asyncio.to_thread(_log_sync, job_id, level, message)
-
-
-async def run_pipeline(job_id: int, target_url: str) -> None:
-    await _log(job_id, "info", f"Starting... target_url={target_url}")
-    await asyncio.sleep(5)
-    await _log(job_id, "info", "Finished")
 
 
 async def worker_loop() -> None:
@@ -131,14 +77,13 @@ async def worker_loop() -> None:
                     timeout=JOB_TIMEOUT_SECONDS,
                 )
             except asyncio.TimeoutError:
-                await _mark_failed(
-                    job_id,
-                    f"Pipeline timeout after {JOB_TIMEOUT_SECONDS}s",
-                )
+                error_message = f"Pipeline timeout after {JOB_TIMEOUT_SECONDS}s"
+                await log_job_message(job_id, "error", error_message)
+                await mark_job_failed(job_id, error_message)
             except Exception as exc:
-                await _mark_failed(job_id, str(exc))
-            else:
-                await _mark_done(job_id)
+                # Fallback guard in case pipeline exception handling
+                # fails before writing the terminal failed state.
+                await mark_job_failed(job_id, str(exc))
             finally:
                 JOB_QUEUES.pop(job_id, None)
         except asyncio.CancelledError:
