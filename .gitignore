@@ -1,14 +1,40 @@
-# Environment directories
-node_modules/
-__pycache__/
+# --- Python & Environment ---
 .venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.python-version
 
-# Secrets
+# --- Scraper Artifacts (Самое важное!) ---
+# Мы не хотим хранить тысячи скачанных картинок и HTML в Git
+artifacts/
+backend/data/artifacts/
+*.zip
+*.log
+
+# --- Database & Local Data ---
+# Указываем правильный путь к твоей папке с базой
+backend/data/*.db
+backend/data/*.db-journal
+backend/data/*.db-wal
+
+# --- Secrets & Config ---
 .env
+config.local.py
 
-# PRD runtime data
-app/data/app.db
-app/volumes/
+# --- Frontend & Node ---
+node_modules/
+dist/
+build/
+.eslintcache
 
-# OS-specific files
+# --- OS Specific ---
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# --- IDE Specific ---
+.vscode/
+.idea/
+.cursor/
