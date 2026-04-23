@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from backend.database import get_connection, log_message
+from backend.worker.module_scraper import module_scraper
 
 PipelineStep = tuple[str, Callable[..., Awaitable[None]], tuple[object, ...]]
 
@@ -56,11 +57,6 @@ async def mark_job_done(job_id: int) -> None:
 
 async def mark_job_failed(job_id: int, error_message: str) -> None:
     await asyncio.to_thread(_mark_failed_sync, job_id, error_message)
-
-
-async def module_scraper(job_id: int, target_url: str) -> None:
-    _ = (job_id, target_url)
-    await asyncio.sleep(1)
 
 
 async def module_dom_mutator(job_id: int) -> None:
