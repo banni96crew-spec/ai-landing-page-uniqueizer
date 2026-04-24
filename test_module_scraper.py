@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from urllib.parse import urlparse
 
 from backend import database
 from backend.worker import module_scraper
@@ -234,6 +235,153 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result)
         scrape_mock.assert_awaited_once_with(5, "https://example.com")
+
+
+class _FakeStreamResponse:
+    def __init__(self, *, status_code: int, body: bytes, headers: dict[str, str] | None = None):
+        self.status_code = status_code
+        self._body = body
+        self.headers = headers or {}
+
+    async def aiter_bytes(self, *, chunk_size: int = 65536):
+        for i in range(0, len(self._body), chunk_size):
+            yield self._body[i : i + chunk_size]
+
+
+class _FakeStreamContext:
+    def __init__(self, response: _FakeStreamResponse):
+        self._response = response
+
+    async def __aenter__(self) -> _FakeStreamResponse:
+        return self._response
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+class _FakeHttpxClient:
+    def __init__(self, routes: dict[str, _FakeStreamResponse]):
+        self._routes = routes
+        self.stream_calls: list[str] = []
+
+    def stream(self, method: str, url: str):
+        self.stream_calls.append(f"{method} {url}")
+        response = self._routes.get(url) or _FakeStreamResponse(status_code=404, body=b"")
+        return _FakeStreamContext(response)
+
+
+class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rewrite_scraped_assets_downloads_and_rewrites_src_href_and_srcset(self) -> None:
+        job_id = 11
+        raw_dir = self._make_temp_raw_dir()
+        html = (
+            "<html><head>"
+            '<link rel="stylesheet" href="//cdn.example.com/site.css">'
+            "</head><body>"
+            '<img src="/img/logo.png" srcset="/img/a.png 1x, /img/b.png 2x">'
+            '<a href="data:text/plain,hello">skip</a>'
+            "</body></html>"
+        )
+
+        base_url = "https://example.com/path/"
+        base_scheme = urlparse(base_url).scheme
+
+        routes = {
+            "https://cdn.example.com/site.css": _FakeStreamResponse(
+                status_code=200, body=b"body{color:red}"
+            ),
+            "https://example.com/img/logo.png": _FakeStreamResponse(
+                status_code=200, body=b"PNGDATA"
+            ),
+            "https://example.com/img/a.png": _FakeStreamResponse(status_code=200, body=b"A"),
+            "https://example.com/img/b.png": _FakeStreamResponse(status_code=200, body=b"BB"),
+        }
+        client = _FakeHttpxClient(routes)
+
+        with patch.object(module_scraper, "httpx") as httpx_mod:
+            httpx_mod.Timeout.return_value = None
+            httpx_mod.AsyncClient.return_value.__aenter__ = AsyncMock(return_value=client)
+            httpx_mod.AsyncClient.return_value.__aexit__ = AsyncMock(return_value=None)
+            rewritten = await module_scraper._rewrite_scraped_assets(
+                job_id=job_id, target_url=base_url, raw_dir=raw_dir, html=html
+            )
+
+        # href rewritten to local file under ./assets/
+        self.assertIn('href="./assets/site.css"', rewritten)
+        # src rewritten
+        self.assertIn('src="./assets/logo.png"', rewritten)
+        # srcset rewritten but preserves descriptors
+        self.assertIn('srcset="./assets/a.png 1x, ./assets/b.png 2x"', rewritten)
+        # data: URLs remain unchanged
+        self.assertIn('href="data:text/plain,hello"', rewritten)
+
+        assets_dir = raw_dir / "assets"
+        self.assertTrue((assets_dir / "site.css").exists())
+        self.assertTrue((assets_dir / "logo.png").exists())
+        self.assertTrue((assets_dir / "a.png").exists())
+        self.assertTrue((assets_dir / "b.png").exists())
+
+        # Ensure scheme inheritance for //... used base scheme.
+        self.assertIn(f"GET {base_scheme}://cdn.example.com/site.css", client.stream_calls)
+
+    async def test_rewrite_scraped_assets_uses_cache_for_duplicate_urls(self) -> None:
+        raw_dir = self._make_temp_raw_dir()
+        html = (
+            "<html><body>"
+            '<img src="/img/logo.png">'
+            '<img src="/img/logo.png">'
+            "</body></html>"
+        )
+        routes = {
+            "https://example.com/img/logo.png": _FakeStreamResponse(status_code=200, body=b"X")
+        }
+        client = _FakeHttpxClient(routes)
+
+        with patch.object(module_scraper, "httpx") as httpx_mod:
+            httpx_mod.Timeout.return_value = None
+            httpx_mod.AsyncClient.return_value.__aenter__ = AsyncMock(return_value=client)
+            httpx_mod.AsyncClient.return_value.__aexit__ = AsyncMock(return_value=None)
+            await module_scraper._rewrite_scraped_assets(
+                job_id=1, target_url="https://example.com", raw_dir=raw_dir, html=html
+            )
+
+        self.assertEqual(client.stream_calls.count("GET https://example.com/img/logo.png"), 1)
+
+    async def test_rewrite_scraped_assets_falls_back_on_asset_too_large(self) -> None:
+        raw_dir = self._make_temp_raw_dir()
+        html = "<html><body><img src='/big.bin'></body></html>"
+        routes = {
+            "https://example.com/big.bin": _FakeStreamResponse(
+                status_code=200,
+                body=b"0123456789",
+                headers={"content-length": "10"},
+            )
+        }
+        client = _FakeHttpxClient(routes)
+
+        from backend.worker import asset_rewriter
+
+        with (
+            patch.object(asset_rewriter, "ASSET_MAX_SIZE_BYTES", 5),
+            patch.object(module_scraper, "httpx") as httpx_mod,
+        ):
+            httpx_mod.Timeout.return_value = None
+            httpx_mod.AsyncClient.return_value.__aenter__ = AsyncMock(return_value=client)
+            httpx_mod.AsyncClient.return_value.__aexit__ = AsyncMock(return_value=None)
+            rewritten = await module_scraper._rewrite_scraped_assets(
+                job_id=1, target_url="https://example.com", raw_dir=raw_dir, html=html
+            )
+
+        # Too large => keep original URL
+        self.assertTrue(("src=\"/big.bin\"" in rewritten) or ("src='/big.bin'" in rewritten))
+        self.assertFalse((raw_dir / "assets" / "big.bin").exists())
+
+    def _make_temp_raw_dir(self) -> Path:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        raw_dir = Path(temp_dir.name) / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        return raw_dir
 
 
 if __name__ == "__main__":

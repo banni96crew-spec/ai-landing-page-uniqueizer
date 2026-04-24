@@ -3,6 +3,11 @@ import logging
 from pathlib import Path
 
 try:
+    import httpx
+except ModuleNotFoundError:  # pragma: no cover - fallback for test environments
+    httpx = None  # type: ignore[assignment]
+
+try:
     from playwright.async_api import (
         Error as PlaywrightError,
         TimeoutError as PlaywrightTimeoutError,
@@ -17,8 +22,9 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for test environments
     class PlaywrightTimeoutError(PlaywrightError):
         """Fallback Playwright timeout error when dependency is unavailable."""
 
-from backend.config import SCRAPER_PAGE_TIMEOUT_SECONDS, get_job_dir
+from backend.config import ASSET_DOWNLOAD_TIMEOUT_SECONDS, SCRAPER_PAGE_TIMEOUT_SECONDS, get_job_dir
 from backend.database import get_connection, log_message
+from backend.worker.asset_rewriter import rewrite_asset_urls
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +92,19 @@ async def _collect_html(page: object) -> str:
 async def _rewrite_scraped_assets(
     *, job_id: int, target_url: str, raw_dir: Path, html: str
 ) -> str:
-    return html
+    (raw_dir / "assets").mkdir(parents=True, exist_ok=True)
+    if httpx is None:
+        logger.warning("httpx package is not installed, skipping asset rewrite (job_id=%s)", job_id)
+        return html
+    timeout = httpx.Timeout(ASSET_DOWNLOAD_TIMEOUT_SECONDS)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        return await rewrite_asset_urls(
+            html=html,
+            base_url=target_url,
+            raw_dir=raw_dir,
+            client=client,
+            job_id=job_id,
+        )
 
 
 def _require_playwright() -> None:
