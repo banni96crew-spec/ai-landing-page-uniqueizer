@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import urlparse
 
 from backend import database
+from backend.worker.asset_rewriter import AssetRewriteResult
 from backend.worker import module_scraper
+from backend.worker.dom_cleaner import DomCleanResult, DomCleanStats
 
 
 class _FakePlaywrightContext:
@@ -120,6 +122,7 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
         rewritten_html = "<html>" + ("w" * 1200) + "</html>"
         _, _, playwright_context = self._build_playwright_patch(html=original_html)
         raw_root = self.temp_path / "jobs" / "7"
+        rewrite_result = AssetRewriteResult(html=rewritten_html, css_file_origins={})
 
         with (
             patch.object(module_scraper, "async_playwright", return_value=playwright_context),
@@ -127,7 +130,7 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
             patch.object(
                 module_scraper,
                 "_rewrite_scraped_assets",
-                new=AsyncMock(return_value=rewritten_html),
+                new=AsyncMock(return_value=rewrite_result),
             ) as rewrite_mock,
         ):
             raw_dir = await module_scraper.scrape(7, "https://example.com")
@@ -226,15 +229,32 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
                 await module_scraper.scrape(4, "https://example.com")
 
     async def test_module_scraper_discards_path_result(self) -> None:
+        dummy_result = DomCleanResult(
+            cleaned_dir=self.temp_path / "jobs" / "5" / "cleaned",
+            index_html_path=self.temp_path / "jobs" / "5" / "cleaned" / "index.html",
+            stats=DomCleanStats(
+                removed_scripts=1,
+                removed_noscripts=2,
+                removed_iframes=3,
+                removed_csp_meta=4,
+                removed_inline_handlers=5,
+            ),
+        )
+        self._insert_job(5)
         with patch.object(
             module_scraper,
             "scrape",
             new=AsyncMock(return_value=self.temp_path / "jobs" / "5" / "raw"),
-        ) as scrape_mock:
+        ) as scrape_mock, patch.object(
+            module_scraper,
+            "clean_job_html",
+            new=AsyncMock(return_value=dummy_result),
+        ) as cleaner_mock:
             result = await module_scraper.module_scraper(5, "https://example.com")
 
         self.assertIsNone(result)
         scrape_mock.assert_awaited_once_with(5, "https://example.com")
+        cleaner_mock.assert_awaited_once_with(5, self.temp_path / "jobs" / "5" / "raw")
 
 
 class _FakeStreamResponse:
@@ -310,9 +330,10 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
         client = _FakeHttpxClient(routes)
 
         with self._patch_httpx_client(client):
-            rewritten = await module_scraper._rewrite_scraped_assets(
+            rewrite_result = await module_scraper._rewrite_scraped_assets(
                 job_id=job_id, target_url=base_url, raw_dir=raw_dir, html=html
             )
+        rewritten = rewrite_result.html
 
         # href rewritten to local file under ./assets/
         self.assertIn('href="./assets/site.css"', rewritten)
@@ -369,9 +390,10 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(asset_rewriter, "ASSET_MAX_SIZE_BYTES", 5), self._patch_httpx_client(
             client
         ):
-            rewritten = await module_scraper._rewrite_scraped_assets(
+            rewrite_result = await module_scraper._rewrite_scraped_assets(
                 job_id=1, target_url="https://example.com", raw_dir=raw_dir, html=html
             )
+        rewritten = rewrite_result.html
 
         # Too large => keep original URL
         self.assertTrue(("src=\"/big.bin\"" in rewritten) or ("src='/big.bin'" in rewritten))
@@ -391,9 +413,10 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
         client = _FakeHttpxClient({})
 
         with self._patch_httpx_client(client):
-            rewritten = await module_scraper._rewrite_scraped_assets(
+            rewrite_result = await module_scraper._rewrite_scraped_assets(
                 job_id=3, target_url="https://example.com", raw_dir=raw_dir, html=html
             )
+        rewritten = rewrite_result.html
 
         self.assertIn('src="data:image/png;base64,abc"', rewritten)
         self.assertIn('href="javascript:void(0)"', rewritten)
@@ -426,9 +449,10 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self._patch_httpx_client(client):
-            rewritten = await module_scraper._rewrite_scraped_assets(
+            rewrite_result = await module_scraper._rewrite_scraped_assets(
                 job_id=4, target_url="https://example.com", raw_dir=raw_dir, html=html
             )
+        rewritten = rewrite_result.html
 
         self.assertIn('src="/missing.png"', rewritten)
         self.assertIn('data-src="/boom.png"', rewritten)
@@ -460,14 +484,56 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self._patch_httpx_client(client):
-            rewritten = await module_scraper._rewrite_scraped_assets(
+            rewrite_result = await module_scraper._rewrite_scraped_assets(
                 job_id=5, target_url="https://example.com", raw_dir=raw_dir, html=html
             )
+        rewritten = rewrite_result.html
 
         self.assertIn('src="./assets/logo.png"', rewritten)
         self.assertIn('src="./assets/logo_1.png"', rewritten)
         self.assertTrue((raw_dir / "assets" / "logo.png").exists())
         self.assertTrue((raw_dir / "assets" / "logo_1.png").exists())
+
+    async def test_rewrite_scraped_assets_rewrites_css_urls_against_css_origin(self) -> None:
+        raw_dir = self._make_temp_raw_dir()
+        html = (
+            "<html><head>"
+            '<link rel="stylesheet" href="//cdn.example.com/css/site.css">'
+            "</head><body></body></html>"
+        )
+        client = _FakeHttpxClient(
+            {
+                "https://cdn.example.com/css/site.css": _FakeStreamResponse(
+                    status_code=200,
+                    body=(
+                        b"@font-face{src:url('../fonts/font.woff2')}"
+                        b".hero{background:url(\"data:image/png;base64,abc\")}"
+                    ),
+                ),
+                "https://cdn.example.com/fonts/font.woff2": _FakeStreamResponse(
+                    status_code=200,
+                    body=b"FONTDATA",
+                ),
+            }
+        )
+
+        with self._patch_httpx_client(client):
+            rewrite_result = await module_scraper._rewrite_scraped_assets(
+                job_id=6,
+                target_url="https://example.com/landing/index.html",
+                raw_dir=raw_dir,
+                html=html,
+            )
+
+        self.assertEqual(
+            rewrite_result.css_file_origins,
+            {"assets/site.css": "https://cdn.example.com/css/site.css"},
+        )
+        css_text = (raw_dir / "assets" / "site.css").read_text(encoding="utf-8")
+        self.assertIn("url('font.woff2')", css_text)
+        self.assertIn('url("data:image/png;base64,abc")', css_text)
+        self.assertTrue((raw_dir / "assets" / "font.woff2").exists())
+        self.assertIn("GET https://cdn.example.com/fonts/font.woff2", client.stream_calls)
 
     def _make_temp_raw_dir(self) -> Path:
         temp_dir = tempfile.TemporaryDirectory()

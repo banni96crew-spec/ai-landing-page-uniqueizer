@@ -24,7 +24,9 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for test environments
 
 from backend.config import ASSET_DOWNLOAD_TIMEOUT_SECONDS, SCRAPER_PAGE_TIMEOUT_SECONDS, get_job_dir
 from backend.database import get_connection, log_message
-from backend.worker.asset_rewriter import rewrite_asset_urls
+from backend.worker.asset_rewriter import AssetRewriteResult, rewrite_asset_urls
+from backend.worker.css_url_rewriter import rewrite_css_urls
+from backend.worker.dom_cleaner import clean_job_html
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,14 @@ class ScraperError(RuntimeError):
 def _write_raw_html_sync(raw_dir: Path, html: str) -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
     (raw_dir / "index.html").write_text(html, encoding="utf-8")
+
+
+def _read_text_sync(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _write_text_sync(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
 
 
 def _log_job_message_sync(job_id: int, level: str, message: str) -> None:
@@ -91,20 +101,40 @@ async def _collect_html(page: object) -> str:
 
 async def _rewrite_scraped_assets(
     *, job_id: int, target_url: str, raw_dir: Path, html: str
-) -> str:
+) -> AssetRewriteResult:
     (raw_dir / "assets").mkdir(parents=True, exist_ok=True)
     if httpx is None:
         logger.warning("httpx package is not installed, skipping asset rewrite (job_id=%s)", job_id)
-        return html
+        return AssetRewriteResult(html=html, css_file_origins={})
     timeout = httpx.Timeout(ASSET_DOWNLOAD_TIMEOUT_SECONDS)
+    url_cache: dict[str, str] = {}
+    used_filenames: dict[str, str] = {}
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        return await rewrite_asset_urls(
+        rewrite_result = await rewrite_asset_urls(
             html=html,
             base_url=target_url,
             raw_dir=raw_dir,
             client=client,
             job_id=job_id,
+            url_cache=url_cache,
+            used_filenames=used_filenames,
         )
+        assets_dir = raw_dir / "assets"
+        for css_rel_path, css_origin_url in rewrite_result.css_file_origins.items():
+            css_file_path = raw_dir / css_rel_path
+            css_text = await asyncio.to_thread(_read_text_sync, css_file_path)
+            rewritten_css = await rewrite_css_urls(
+                css_text=css_text,
+                css_file_base_url=css_origin_url,
+                css_file_path=css_file_path,
+                assets_dir=assets_dir,
+                url_cache=url_cache,
+                used_filenames=used_filenames,
+                client=client,
+                job_id=job_id,
+            )
+            await asyncio.to_thread(_write_text_sync, css_file_path, rewritten_css)
+        return rewrite_result
 
 
 def _require_playwright() -> None:
@@ -138,15 +168,29 @@ async def scrape(job_id: int, target_url: str) -> Path:
     if len(html) < MIN_HTML_LENGTH:
         raise ScraperError("Scraped HTML too small, possible bot detection")
 
-    html = await _rewrite_scraped_assets(
+    rewrite_result = await _rewrite_scraped_assets(
         job_id=job_id,
         target_url=target_url,
         raw_dir=raw_dir,
         html=html,
     )
-    await asyncio.to_thread(_write_raw_html_sync, raw_dir, html)
+    await asyncio.to_thread(_write_raw_html_sync, raw_dir, rewrite_result.html)
     return raw_dir
 
 
 async def module_scraper(job_id: int, target_url: str) -> None:
-    await scrape(job_id, target_url)
+    raw_dir = await scrape(job_id, target_url)
+    result = await clean_job_html(job_id, raw_dir)
+    stats = result.stats
+
+    await _log_job_message(job_id, "info", f"dom_cleaner: removed script tags: {stats.removed_scripts}")
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: removed noscript tags: {stats.removed_noscripts}"
+    )
+    await _log_job_message(job_id, "info", f"dom_cleaner: removed iframe tags: {stats.removed_iframes}")
+    await _log_job_message(job_id, "info", f"dom_cleaner: removed CSP meta tags: {stats.removed_csp_meta}")
+    await _log_job_message(
+        job_id,
+        "info",
+        f"dom_cleaner: removed inline event handlers: {stats.removed_inline_handlers}",
+    )

@@ -8,7 +8,7 @@ def calculate_progress_pct(
     job_id: int,
     status: str,
 ) -> int:
-    if status == "pending":
+    if status in {"pending", "failed"}:
         return 0
 
     if status == "done":
