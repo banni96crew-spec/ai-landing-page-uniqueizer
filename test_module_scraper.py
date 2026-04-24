@@ -260,17 +260,28 @@ class _FakeStreamContext:
 
 
 class _FakeHttpxClient:
-    def __init__(self, routes: dict[str, _FakeStreamResponse]):
+    def __init__(self, routes: dict[str, _FakeStreamResponse | Exception]):
         self._routes = routes
         self.stream_calls: list[str] = []
 
     def stream(self, method: str, url: str):
         self.stream_calls.append(f"{method} {url}")
         response = self._routes.get(url) or _FakeStreamResponse(status_code=404, body=b"")
+        if isinstance(response, Exception):
+            raise response
         return _FakeStreamContext(response)
 
 
 class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
+    def _patch_httpx_client(self, client: _FakeHttpxClient):
+        httpx_patcher = patch.object(module_scraper, "httpx")
+        httpx_mod = httpx_patcher.start()
+        self.addCleanup(httpx_patcher.stop)
+        httpx_mod.Timeout.return_value = None
+        httpx_mod.AsyncClient.return_value.__aenter__ = AsyncMock(return_value=client)
+        httpx_mod.AsyncClient.return_value.__aexit__ = AsyncMock(return_value=None)
+        return httpx_mod
+
     async def test_rewrite_scraped_assets_downloads_and_rewrites_src_href_and_srcset(self) -> None:
         job_id = 11
         raw_dir = self._make_temp_raw_dir()
@@ -298,10 +309,7 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
         }
         client = _FakeHttpxClient(routes)
 
-        with patch.object(module_scraper, "httpx") as httpx_mod:
-            httpx_mod.Timeout.return_value = None
-            httpx_mod.AsyncClient.return_value.__aenter__ = AsyncMock(return_value=client)
-            httpx_mod.AsyncClient.return_value.__aexit__ = AsyncMock(return_value=None)
+        with self._patch_httpx_client(client):
             rewritten = await module_scraper._rewrite_scraped_assets(
                 job_id=job_id, target_url=base_url, raw_dir=raw_dir, html=html
             )
@@ -337,10 +345,7 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
         }
         client = _FakeHttpxClient(routes)
 
-        with patch.object(module_scraper, "httpx") as httpx_mod:
-            httpx_mod.Timeout.return_value = None
-            httpx_mod.AsyncClient.return_value.__aenter__ = AsyncMock(return_value=client)
-            httpx_mod.AsyncClient.return_value.__aexit__ = AsyncMock(return_value=None)
+        with self._patch_httpx_client(client):
             await module_scraper._rewrite_scraped_assets(
                 job_id=1, target_url="https://example.com", raw_dir=raw_dir, html=html
             )
@@ -361,13 +366,9 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
 
         from backend.worker import asset_rewriter
 
-        with (
-            patch.object(asset_rewriter, "ASSET_MAX_SIZE_BYTES", 5),
-            patch.object(module_scraper, "httpx") as httpx_mod,
+        with patch.object(asset_rewriter, "ASSET_MAX_SIZE_BYTES", 5), self._patch_httpx_client(
+            client
         ):
-            httpx_mod.Timeout.return_value = None
-            httpx_mod.AsyncClient.return_value.__aenter__ = AsyncMock(return_value=client)
-            httpx_mod.AsyncClient.return_value.__aexit__ = AsyncMock(return_value=None)
             rewritten = await module_scraper._rewrite_scraped_assets(
                 job_id=1, target_url="https://example.com", raw_dir=raw_dir, html=html
             )
@@ -375,6 +376,98 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
         # Too large => keep original URL
         self.assertTrue(("src=\"/big.bin\"" in rewritten) or ("src='/big.bin'" in rewritten))
         self.assertFalse((raw_dir / "assets" / "big.bin").exists())
+
+    async def test_rewrite_scraped_assets_skips_non_http_schemes(self) -> None:
+        raw_dir = self._make_temp_raw_dir()
+        html = (
+            "<html><body>"
+            '<img src="data:image/png;base64,abc">'
+            '<a href="javascript:void(0)">click</a>'
+            '<a href="mailto:test@example.com">mail</a>'
+            '<a href="tel:+123456">phone</a>'
+            '<form action="#signup"></form>'
+            "</body></html>"
+        )
+        client = _FakeHttpxClient({})
+
+        with self._patch_httpx_client(client):
+            rewritten = await module_scraper._rewrite_scraped_assets(
+                job_id=3, target_url="https://example.com", raw_dir=raw_dir, html=html
+            )
+
+        self.assertIn('src="data:image/png;base64,abc"', rewritten)
+        self.assertIn('href="javascript:void(0)"', rewritten)
+        self.assertIn('href="mailto:test@example.com"', rewritten)
+        self.assertIn('href="tel:+123456"', rewritten)
+        self.assertIn('action="#signup"', rewritten)
+        self.assertEqual(client.stream_calls, [])
+
+    async def test_rewrite_scraped_assets_keeps_original_url_on_http_error_and_exception(
+        self,
+    ) -> None:
+        raw_dir = self._make_temp_raw_dir()
+        html = (
+            "<html><body>"
+            '<img src="/missing.png">'
+            '<div data-src="/boom.png"></div>'
+            '<img srcset="/ok.png 1x, /broken.png 2x">'
+            "</body></html>"
+        )
+        client = _FakeHttpxClient(
+            {
+                "https://example.com/missing.png": _FakeStreamResponse(
+                    status_code=404,
+                    body=b"",
+                ),
+                "https://example.com/boom.png": RuntimeError("socket closed"),
+                "https://example.com/ok.png": _FakeStreamResponse(status_code=200, body=b"OK"),
+                "https://example.com/broken.png": RuntimeError("network failed"),
+            }
+        )
+
+        with self._patch_httpx_client(client):
+            rewritten = await module_scraper._rewrite_scraped_assets(
+                job_id=4, target_url="https://example.com", raw_dir=raw_dir, html=html
+            )
+
+        self.assertIn('src="/missing.png"', rewritten)
+        self.assertIn('data-src="/boom.png"', rewritten)
+        self.assertIn('srcset="./assets/ok.png 1x, /broken.png 2x"', rewritten)
+        self.assertFalse((raw_dir / "assets" / "missing.png").exists())
+        self.assertFalse((raw_dir / "assets" / "boom.png").exists())
+        self.assertFalse((raw_dir / "assets" / "broken.png").exists())
+        self.assertTrue((raw_dir / "assets" / "ok.png").exists())
+
+    async def test_rewrite_scraped_assets_suffixes_colliding_filenames(self) -> None:
+        raw_dir = self._make_temp_raw_dir()
+        html = (
+            "<html><body>"
+            '<img src="https://cdn.example.com/shared/logo.png">'
+            '<img src="https://assets.example.com/brand/logo.png">'
+            "</body></html>"
+        )
+        client = _FakeHttpxClient(
+            {
+                "https://cdn.example.com/shared/logo.png": _FakeStreamResponse(
+                    status_code=200,
+                    body=b"FIRST",
+                ),
+                "https://assets.example.com/brand/logo.png": _FakeStreamResponse(
+                    status_code=200,
+                    body=b"SECOND",
+                ),
+            }
+        )
+
+        with self._patch_httpx_client(client):
+            rewritten = await module_scraper._rewrite_scraped_assets(
+                job_id=5, target_url="https://example.com", raw_dir=raw_dir, html=html
+            )
+
+        self.assertIn('src="./assets/logo.png"', rewritten)
+        self.assertIn('src="./assets/logo_1.png"', rewritten)
+        self.assertTrue((raw_dir / "assets" / "logo.png").exists())
+        self.assertTrue((raw_dir / "assets" / "logo_1.png").exists())
 
     def _make_temp_raw_dir(self) -> Path:
         temp_dir = tempfile.TemporaryDirectory()
