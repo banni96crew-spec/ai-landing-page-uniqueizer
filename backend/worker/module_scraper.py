@@ -83,6 +83,12 @@ async def _collect_html(page: object) -> str:
     return await page.content()
 
 
+async def _rewrite_scraped_assets(
+    *, job_id: int, target_url: str, raw_dir: Path, html: str
+) -> str:
+    return html
+
+
 def _require_playwright() -> None:
     if async_playwright is None:
         raise RuntimeError("playwright package is not installed")
@@ -114,6 +120,12 @@ async def scrape(job_id: int, target_url: str) -> Path:
     if len(html) < MIN_HTML_LENGTH:
         raise ScraperError("Scraped HTML too small, possible bot detection")
 
+    html = await _rewrite_scraped_assets(
+        job_id=job_id,
+        target_url=target_url,
+        raw_dir=raw_dir,
+        html=html,
+    )
     await asyncio.to_thread(_write_raw_html_sync, raw_dir, html)
     return raw_dir
 

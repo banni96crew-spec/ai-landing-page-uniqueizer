@@ -52,11 +52,13 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
         html: str,
         page_url: str = "https://example.com",
         networkidle_side_effect: Exception | None = None,
+        goto_side_effect: Exception | None = None,
     ) -> tuple[AsyncMock, AsyncMock, _FakePlaywrightContext]:
         page = AsyncMock()
         page.url = page_url
         page.content.return_value = html
         page.wait_for_load_state.side_effect = networkidle_side_effect
+        page.goto.side_effect = goto_side_effect
 
         context = AsyncMock()
         context.new_page.return_value = page
@@ -112,6 +114,34 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
         )
         browser.close.assert_awaited_once()
 
+    async def test_scrape_rewrites_assets_before_writing_raw_html(self) -> None:
+        original_html = "<html>" + ("r" * 1200) + "</html>"
+        rewritten_html = "<html>" + ("w" * 1200) + "</html>"
+        _, _, playwright_context = self._build_playwright_patch(html=original_html)
+        raw_root = self.temp_path / "jobs" / "7"
+
+        with (
+            patch.object(module_scraper, "async_playwright", return_value=playwright_context),
+            patch.object(module_scraper, "get_job_dir", return_value=raw_root),
+            patch.object(
+                module_scraper,
+                "_rewrite_scraped_assets",
+                new=AsyncMock(return_value=rewritten_html),
+            ) as rewrite_mock,
+        ):
+            raw_dir = await module_scraper.scrape(7, "https://example.com")
+
+        rewrite_mock.assert_awaited_once_with(
+            job_id=7,
+            target_url="https://example.com",
+            raw_dir=raw_root / "raw",
+            html=original_html,
+        )
+        self.assertEqual(
+            (raw_dir / "index.html").read_text(encoding="utf-8"),
+            rewritten_html,
+        )
+
     async def test_scrape_logs_warn_and_continues_on_networkidle_timeout(self) -> None:
         self._insert_job(2)
         page, _, playwright_context = self._build_playwright_patch(
@@ -132,6 +162,28 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
             [("warn", "networkidle timeout, using partial DOM")],
         )
         page.content.assert_awaited_once()
+
+    async def test_scrape_raises_on_navigation_timeout(self) -> None:
+        _, browser, playwright_context = self._build_playwright_patch(
+            html="<html>" + ("d" * 1300) + "</html>",
+            goto_side_effect=module_scraper.PlaywrightTimeoutError("timeout"),
+        )
+
+        with (
+            patch.object(module_scraper, "async_playwright", return_value=playwright_context),
+            patch.object(
+                module_scraper,
+                "get_job_dir",
+                return_value=self.temp_path / "jobs" / "6",
+            ),
+        ):
+            with self.assertRaisesRegex(
+                module_scraper.ScraperError,
+                "Target URL unreachable or timeout",
+            ):
+                await module_scraper.scrape(6, "https://example.com")
+
+        browser.close.assert_awaited_once()
 
     async def test_scrape_raises_on_antibot_redirect(self) -> None:
         _, _, playwright_context = self._build_playwright_patch(
