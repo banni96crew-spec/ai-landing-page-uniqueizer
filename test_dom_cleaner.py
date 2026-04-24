@@ -32,56 +32,83 @@ class DomCleanerTests(unittest.IsolatedAsyncioTestCase):
         raw_dir = config.get_job_dir(job_id) / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
 
-        # Extra file proves we clone full tree.
         (raw_dir / "assets").mkdir(parents=True, exist_ok=True)
         (raw_dir / "assets" / "a.txt").write_text("hello", encoding="utf-8")
+        (raw_dir / "assets" / "sheet.css").write_text(
+            'body{color:red}@import url("https://fonts.googleapis.com/css2?family=X");\np{color:blue}',
+            encoding="utf-8",
+        )
 
         raw_html = """
         <html><head>
           <meta http-equiv="Content-Security-Policy" content="default-src 'none'">
           <meta http-equiv="content-security-policy" content="img-src https:">
+          <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto">
           <script>alert(1)</script>
+          <script src="https://www.googletagmanager.com/gtag/js?id=1"></script>
         </head>
         <body onload="x()">
+          <!-- tracker noise -->
           <noscript>fallback</noscript>
-          <iframe src="https://example.com"></iframe>
-          <div onclick="y()" onmouseover="z()">hi</div>
+          <iframe src="https://example.com/embed"></iframe>
+          <iframe src="https://www.googletagmanager.com/ns.html?id=x"></iframe>
+          <div onclick="y()" onmouseover="z()">hi <bdo>w</bdo><cite>c</cite></div>
         </body></html>
         """.strip()
         (raw_dir / "index.html").write_text(raw_html, encoding="utf-8")
 
         raw_before = (raw_dir / "index.html").read_text(encoding="utf-8")
 
-        result = await dom_cleaner.clean_job_html(job_id, raw_dir)
+        result = await dom_cleaner.clean_job_html(job_id, raw_dir, base_url="https://landing.example/")
 
-        # raw untouched
         self.assertEqual((raw_dir / "index.html").read_text(encoding="utf-8"), raw_before)
 
-        # cleaned created and self-contained clone
         self.assertTrue((result.cleaned_dir / "assets" / "a.txt").exists())
         self.assertEqual(
             (result.cleaned_dir / "assets" / "a.txt").read_text(encoding="utf-8"),
             "hello",
         )
 
-        cleaned_html = result.index_html_path.read_text(encoding="utf-8")
-        self.assertNotIn("<script", cleaned_html.lower())
-        self.assertNotIn("<noscript", cleaned_html.lower())
-        self.assertNotIn("<iframe", cleaned_html.lower())
-        self.assertNotIn("content-security-policy", cleaned_html.lower())
-        self.assertNotIn(" onload=", cleaned_html.lower())
-        self.assertNotIn(" onclick=", cleaned_html.lower())
-        self.assertNotIn(" onmouseover=", cleaned_html.lower())
+        cleaned_css = (result.cleaned_dir / "assets" / "sheet.css").read_text(encoding="utf-8")
+        self.assertNotIn("fonts.googleapis.com", cleaned_css.lower())
+        self.assertIn("color:red", cleaned_css)
+        self.assertIn("color:blue", cleaned_css)
+
+        cleaned_html = result.index_html_path.read_text(encoding="utf-8").lower()
+        self.assertIn("<script", cleaned_html)
+        self.assertIn("alert(1)", cleaned_html)
+        self.assertNotIn("googletagmanager.com", cleaned_html)
+        self.assertNotIn("<noscript", cleaned_html)
+        self.assertIn("https://example.com/embed", cleaned_html)
+        self.assertNotIn("googletagmanager.com/ns.html", cleaned_html.lower())
+        self.assertNotIn("content-security-policy", cleaned_html)
+        self.assertIn(" onload=", cleaned_html)
+        self.assertIn(" onclick=", cleaned_html)
+        self.assertIn(" onmouseover=", cleaned_html)
+        self.assertNotIn("fonts.googleapis.com", cleaned_html)
+        self.assertNotIn("tracker noise", cleaned_html)
+        self.assertNotIn("<bdo", cleaned_html)
+        self.assertNotIn("<cite", cleaned_html)
+        # Проверяем, что текст остался, а теги <bdo>/<cite> исчезли
+        self.assertIn("hi wc", cleaned_html)
+        self.assertNotIn("<bdo>", cleaned_html)
+        self.assertNotIn("<cite>", cleaned_html) # Тег cite удален
+
+        self.assertEqual(
+            result.google_font_css_urls,
+            ("https://fonts.googleapis.com/css2?family=Roboto",),
+        )
 
         stats = result.stats
-        self.assertEqual(stats.removed_scripts, 1)
+        self.assertEqual(stats.removed_tracker_scripts, 1)
+        self.assertEqual(stats.removed_tracker_iframes, 1)
         self.assertEqual(stats.removed_noscripts, 1)
-        self.assertEqual(stats.removed_iframes, 1)
         self.assertEqual(stats.removed_csp_meta, 2)
-        # 3 event handler attributes removed: onload, onclick, onmouseover
-        self.assertEqual(stats.removed_inline_handlers, 3)
+        self.assertEqual(stats.removed_html_comments, 1)
+        self.assertEqual(stats.removed_google_font_links, 1)
+        self.assertEqual(stats.removed_font_imports, 1)
+        self.assertEqual(stats.removed_bdo_cite, 2)
 
 
 if __name__ == "__main__":
     unittest.main()
-

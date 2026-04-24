@@ -2,7 +2,7 @@ import asyncio
 import httpx
 from pathlib import Path
 # Импортируем твою новую функцию
-from backend.worker.module_scraper import download_google_fonts
+from backend.worker.google_fonts import download_google_fonts
 
 async def test():
     fonts_dir = Path("./volumes/test_fonts")

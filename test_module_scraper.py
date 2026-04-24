@@ -233,11 +233,14 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
             cleaned_dir=self.temp_path / "jobs" / "5" / "cleaned",
             index_html_path=self.temp_path / "jobs" / "5" / "cleaned" / "index.html",
             stats=DomCleanStats(
-                removed_scripts=1,
-                removed_noscripts=2,
-                removed_iframes=3,
+                removed_tracker_scripts=1,
+                removed_tracker_iframes=2,
+                removed_noscripts=3,
                 removed_csp_meta=4,
-                removed_inline_handlers=5,
+                removed_html_comments=0,
+                removed_google_font_links=0,
+                removed_font_imports=0,
+                removed_bdo_cite=0,
             ),
         )
         self._insert_job(5)
@@ -254,7 +257,9 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(result)
         scrape_mock.assert_awaited_once_with(5, "https://example.com")
-        cleaner_mock.assert_awaited_once_with(5, self.temp_path / "jobs" / "5" / "raw")
+        cleaner_mock.assert_awaited_once_with(
+            5, self.temp_path / "jobs" / "5" / "raw", base_url="https://example.com"
+        )
 
 
 class _FakeStreamResponse:

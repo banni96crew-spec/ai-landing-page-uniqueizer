@@ -1,8 +1,6 @@
 import asyncio
 import logging
-import re
 from pathlib import Path
-from urllib.parse import urlparse
 
 try:
     import httpx
@@ -53,11 +51,6 @@ def _read_text_sync(path: Path) -> str:
 
 def _write_text_sync(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
-
-
-def _write_bytes_sync(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(data)
 
 
 def _log_job_message_sync(job_id: int, level: str, message: str) -> None:
@@ -187,64 +180,28 @@ async def scrape(job_id: int, target_url: str) -> Path:
 
 async def module_scraper(job_id: int, target_url: str) -> None:
     raw_dir = await scrape(job_id, target_url)
-    result = await clean_job_html(job_id, raw_dir)
+    result = await clean_job_html(job_id, raw_dir, base_url=target_url)
     stats = result.stats
 
-    await _log_job_message(job_id, "info", f"dom_cleaner: removed script tags: {stats.removed_scripts}")
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: removed tracker scripts: {stats.removed_tracker_scripts}"
+    )
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: removed tracker iframes: {stats.removed_tracker_iframes}"
+    )
     await _log_job_message(
         job_id, "info", f"dom_cleaner: removed noscript tags: {stats.removed_noscripts}"
     )
-    await _log_job_message(job_id, "info", f"dom_cleaner: removed iframe tags: {stats.removed_iframes}")
     await _log_job_message(job_id, "info", f"dom_cleaner: removed CSP meta tags: {stats.removed_csp_meta}")
     await _log_job_message(
-        job_id,
-        "info",
-        f"dom_cleaner: removed inline event handlers: {stats.removed_inline_handlers}",
+        job_id, "info", f"dom_cleaner: removed HTML comments: {stats.removed_html_comments}"
     )
-
-
-async def download_google_fonts(
-    *, css_url: str, fonts_dir: Path, client: "httpx.AsyncClient", job_id: int
-) -> str:
-    """
-    PRD §3.3 / M2.5:
-    - fetch CSS from fonts.googleapis.com with Windows UA
-    - extract .woff2 gstatic URLs
-    - download into cleaned/assets/fonts/
-    - rewrite CSS URLs to ./assets/fonts/{filename}
-    """
-    try:
-        if httpx is None:
-            raise RuntimeError("httpx package is not installed")
-
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
-        resp = await client.get(css_url, headers=headers, follow_redirects=True)
-        if resp.status_code != 200:
-            raise RuntimeError(f"fonts css http {resp.status_code}")
-        css_text = resp.text
-
-        urls = re.findall(r"url\((https://fonts\.gstatic\.com/[^)]+\.woff2)\)", css_text)
-        if not urls:
-            return css_text
-
-        for font_url in sorted(set(urls)):
-            filename = Path(urlparse(font_url).path).name
-            if not filename:
-                filename = f"font_{abs(hash(font_url))}.woff2"
-
-            font_resp = await client.get(font_url, headers=headers, follow_redirects=True)
-            if font_resp.status_code != 200:
-                message = f"google_fonts: failed to download font (http {font_resp.status_code}): {font_url}"
-                logger.warning("%s (job_id=%s)", message, job_id)
-                await _log_job_message(job_id, "warn", message)
-                continue
-
-            await asyncio.to_thread(_write_bytes_sync, fonts_dir / filename, font_resp.content)
-            css_text = css_text.replace(font_url, f"./assets/fonts/{filename}")
-
-        return css_text
-    except Exception as exc:
-        message = f"google_fonts: download failed for css={css_url}: {exc}"
-        logger.warning("%s (job_id=%s)", message, job_id)
-        await _log_job_message(job_id, "warn", message)
-        return ""
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: removed Google Fonts link tags: {stats.removed_google_font_links}"
+    )
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: stripped Google Fonts @import rules: {stats.removed_font_imports}"
+    )
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: unwrapped bdo/cite tags: {stats.removed_bdo_cite}"
+    )
