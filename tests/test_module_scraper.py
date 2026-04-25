@@ -27,12 +27,12 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_path = Path(self.temp_dir.name)
         self.db_path = self.temp_path / "test.db"
-        self.previous_database_url = database.DATABASE_URL
-        database.DATABASE_URL = str(self.db_path)
+        self.previous_database_url = config.DATABASE_URL
+        config.DATABASE_URL = str(self.db_path)
         database.init_db()
 
     def tearDown(self) -> None:
-        database.DATABASE_URL = self.previous_database_url
+        config.DATABASE_URL = self.previous_database_url
         self.temp_dir.cleanup()
 
     def _insert_job(self, job_id: int) -> None:
@@ -476,6 +476,58 @@ class AssetRewriteTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('href="tel:+123456"', rewritten)
         self.assertIn('action="#signup"', rewritten)
         self.assertEqual(client.stream_calls, [])
+
+    async def test_rewrite_scraped_assets_skips_external_non_assets_and_denied_hosts(
+        self,
+    ) -> None:
+        raw_dir = self._make_temp_raw_dir()
+        html = (
+            "<html><body>"
+            '<a href="https://www.sec.gov/Archives/report">SEC filing</a>'
+            '<a href="https://patreon.com/creator">Patreon</a>'
+            '<a href="https://linkedin.com/company/example">LinkedIn</a>'
+            '<a href="https://external.example.org/privacy">Privacy</a>'
+            '<img src="https://external.example.org/photo.png">'
+            '<img src="https://example.com/img/logo.png">'
+            '<script src="https://cdn.jsdelivr.net/npm/pkg/app.js"></script>'
+            "</body></html>"
+        )
+        client = _FakeHttpxClient(
+            {
+                "https://example.com/img/logo.png": _FakeStreamResponse(
+                    status_code=200,
+                    body=b"LOGO",
+                ),
+                "https://cdn.jsdelivr.net/npm/pkg/app.js": _FakeStreamResponse(
+                    status_code=200,
+                    body=b"console.log(1)",
+                ),
+            }
+        )
+
+        with self._patch_httpx_client(client):
+            rewrite_result = await module_scraper._rewrite_scraped_assets(
+                job_id=8,
+                target_url="https://example.com/landing",
+                raw_dir=raw_dir,
+                html=html,
+            )
+        rewritten = rewrite_result.html
+
+        self.assertIn('href="https://www.sec.gov/Archives/report"', rewritten)
+        self.assertIn('href="https://patreon.com/creator"', rewritten)
+        self.assertIn('href="https://linkedin.com/company/example"', rewritten)
+        self.assertIn('href="https://external.example.org/privacy"', rewritten)
+        self.assertIn('src="https://external.example.org/photo.png"', rewritten)
+        self.assertIn('src="./assets/logo.png"', rewritten)
+        self.assertIn('src="./assets/app.js"', rewritten)
+        self.assertEqual(
+            client.stream_calls,
+            [
+                "GET https://example.com/img/logo.png",
+                "GET https://cdn.jsdelivr.net/npm/pkg/app.js",
+            ],
+        )
 
     async def test_rewrite_scraped_assets_keeps_original_url_on_http_error_and_exception(
         self,

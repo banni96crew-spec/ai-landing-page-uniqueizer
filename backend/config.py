@@ -2,9 +2,10 @@ import os
 from pathlib import Path
 
 
+DEFAULT_DATABASE_URL = str(Path(__file__).resolve().parent / "data" / "app.db")
 JOBS_WORKDIR = Path(os.environ.get("JOBS_WORKDIR", "/app/volumes/jobs"))
 ARTIFACTS_DIR = Path(os.environ.get("ARTIFACTS_DIR", "/app/volumes/artifacts"))
-DATABASE_URL = os.environ.get("DATABASE_URL", "/app/data/app.db")
+DATABASE_URL = os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
 
 JOB_TIMEOUT_SECONDS = int(os.environ.get("JOB_TIMEOUT_SECONDS", "600"))
 WORKER_CONCURRENCY = int(os.environ.get("WORKER_CONCURRENCY", "2"))

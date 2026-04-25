@@ -12,6 +12,52 @@ logger = logging.getLogger(__name__)
 REWRITABLE_ATTRS = {"src", "href", "action", "data-src", "data-href"}
 SRCSET_ATTRS = {"srcset"}
 SKIP_PREFIXES = ("data:", "javascript:", "mailto:", "tel:", "#")
+ASSET_EXTENSIONS = {
+    ".avif",
+    ".css",
+    ".eot",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".js",
+    ".otf",
+    ".png",
+    ".svg",
+    ".ttf",
+    ".webp",
+    ".woff",
+    ".woff2",
+}
+DENIED_HOST_KEYWORDS = (
+    "doubleclick.net",
+    "facebook.com",
+    "facebook.net",
+    "fbcdn.net",
+    "googletagmanager.com",
+    "google-analytics.com",
+    "hotjar.com",
+    "instagram.com",
+    "linkedin.com",
+    "mc.yandex.ru",
+    "patreon.com",
+    "pinterest.com",
+    "pixel.facebook.com",
+    "sec.gov",
+    "t.co",
+    "tiktok.com",
+    "twitter.com",
+    "x.com",
+    "youtube.com",
+)
+ALLOWED_CDN_HOSTS = (
+    "ajax.googleapis.com",
+    "cdn.jsdelivr.net",
+    "cdnjs.cloudflare.com",
+    "fonts.googleapis.com",
+    "fonts.gstatic.com",
+    "unpkg.com",
+)
 _ATTR_RE_TEMPLATE = r"""(?P<prefix>\b{attr}\s*=\s*)(?P<quote>["'])(?P<value>.*?)(?P=quote)"""
 _ATTR_FLAGS = re.IGNORECASE | re.DOTALL
 
@@ -44,6 +90,47 @@ def _resolve_abs_url(url_value: str, *, base_url: str, base_scheme: str) -> str 
     if lowered.startswith(("http://", "https://")):
         return raw
     return urljoin(base_url, raw)
+
+
+def _normalized_host(url: str) -> str:
+    return (urlparse(url).hostname or "").lower().removeprefix("www.")
+
+
+def _is_denied_host(host: str) -> bool:
+    return any(host == denied or host.endswith(f".{denied}") for denied in DENIED_HOST_KEYWORDS)
+
+
+def _is_allowed_cdn(host: str) -> bool:
+    return (
+        host in ALLOWED_CDN_HOSTS
+        or host.startswith("cdn.")
+        or ".cdn." in host
+    )
+
+
+def _is_same_domain(abs_url: str, base_url: str) -> bool:
+    host = _normalized_host(abs_url)
+    base_host = _normalized_host(base_url)
+    if not host or not base_host:
+        return False
+    return (
+        host == base_host
+        or host.endswith(f".{base_host}")
+        or base_host.endswith(f".{host}")
+    )
+
+
+def _has_asset_extension(abs_url: str) -> bool:
+    return Path(urlparse(abs_url).path).suffix.lower() in ASSET_EXTENSIONS
+
+
+def _is_download_candidate(abs_url: str, base_url: str) -> bool:
+    host = _normalized_host(abs_url)
+    if not host or _is_denied_host(host):
+        return False
+    if not _has_asset_extension(abs_url):
+        return False
+    return _is_same_domain(abs_url, base_url) or _is_allowed_cdn(host)
 
 
 def _pick_filename(abs_url: str) -> str:
@@ -124,6 +211,8 @@ async def _resolve_and_download_async(
         return _DownloadResult(rewritten_url=url_value)
     abs_url = _resolve_abs_url(url_value, base_url=base_url, base_scheme=base_scheme)
     if abs_url is None:
+        return _DownloadResult(rewritten_url=url_value)
+    if not _is_download_candidate(abs_url, base_url):
         return _DownloadResult(rewritten_url=url_value)
     cached = url_cache.get(abs_url)
     if cached:

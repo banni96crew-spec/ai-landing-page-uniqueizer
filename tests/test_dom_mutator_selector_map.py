@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from backend import database
+from backend import config, database
 from backend.worker.module_dom_mutator import build_selector_map
 
 
@@ -12,12 +12,12 @@ class DomMutatorSelectorMapTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "test.db"
-        self.previous_database_url = database.DATABASE_URL
-        database.DATABASE_URL = str(self.db_path)
+        self.previous_database_url = config.DATABASE_URL
+        config.DATABASE_URL = str(self.db_path)
         database.init_db()
 
     def tearDown(self) -> None:
-        database.DATABASE_URL = self.previous_database_url
+        config.DATABASE_URL = self.previous_database_url
         self.temp_dir.cleanup()
 
     def _set_prefixes(self, csv_value: str) -> None:

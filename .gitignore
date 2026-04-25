@@ -38,3 +38,16 @@ desktop.ini
 .vscode/
 .idea/
 .cursor/
+
+# Данные и артефакты (это нам в репозитории не нужно)
+volumes/
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
+
+# Окружение и кэш
+.env
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

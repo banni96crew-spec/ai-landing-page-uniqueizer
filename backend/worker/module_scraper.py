@@ -35,6 +35,7 @@ ANTI_BOT_TOKENS = ("captcha", "verify", "challenge")
 NETWORKIDLE_TIMEOUT_MS = 45_000
 LAZY_LOAD_WAIT_MS = 2_000
 MIN_HTML_LENGTH = 1_000
+LOCAL_TARGET_PREFIX = "local:"
 
 
 class ScraperError(RuntimeError):
@@ -44,6 +45,17 @@ class ScraperError(RuntimeError):
 def _write_raw_html_sync(raw_dir: Path, html: str) -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
     (raw_dir / "index.html").write_text(html, encoding="utf-8")
+
+
+def _write_local_debug_html_sync(raw_dir: Path, target_url: str) -> None:
+    local_path_value = target_url.removeprefix(LOCAL_TARGET_PREFIX).strip()
+    if not local_path_value:
+        raise ScraperError("Local debug target path is empty")
+    html = Path(local_path_value).expanduser().read_text(
+        encoding="utf-8",
+        errors="replace",
+    )
+    _write_raw_html_sync(raw_dir, html)
 
 
 def _read_text_sync(path: Path) -> str:
@@ -223,40 +235,62 @@ def _require_playwright() -> None:
 
 async def scrape(job_id: int, target_url: str) -> Path:
     raw_dir = get_job_dir(job_id) / "raw"
+    if target_url.startswith(LOCAL_TARGET_PREFIX):
+        logger.info("scraper: using local debug target (job_id=%s)", job_id)
+        await asyncio.to_thread(_write_local_debug_html_sync, raw_dir, target_url)
+        return raw_dir
+
     _require_playwright()
 
     async with async_playwright() as playwright_api:
-        browser = await playwright_api.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+        logger.info("scraper: launching chromium (job_id=%s)", job_id)
+        browser = await asyncio.wait_for(
+            playwright_api.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"],
+            ),
+            timeout=30,
         )
         try:
-            context = await browser.new_context()
-            page = await context.new_page()
+            logger.info("scraper: creating browser context (job_id=%s)", job_id)
+            context = await asyncio.wait_for(browser.new_context(), timeout=15)
 
+            logger.info("scraper: creating new page (job_id=%s)", job_id)
+            page = await asyncio.wait_for(context.new_page(), timeout=15)
+
+            logger.info("scraper: navigating to target url (job_id=%s)", job_id)
             await _navigate(page, target_url)
 
             if _is_anti_bot_redirect(target_url, page.url):
                 raise ScraperError("Target URL blocked by anti-bot")
 
+            logger.info("scraper: waiting for network idle (job_id=%s)", job_id)
             await _wait_for_network_idle(page, job_id)
+
+            logger.info("scraper: collecting page html (job_id=%s)", job_id)
             html = await _collect_html(page)
         finally:
+            logger.info("scraper: closing browser (job_id=%s)", job_id)
             await browser.close()
 
     if len(html) < MIN_HTML_LENGTH:
         raise ScraperError("Scraped HTML too small, possible bot detection")
 
+    logger.info("scraper: rewriting asset urls (job_id=%s)", job_id)
     rewrite_result = await _rewrite_scraped_assets(
         job_id=job_id,
         target_url=target_url,
         raw_dir=raw_dir,
         html=html,
     )
+    logger.info("scraper: writing raw html to disk (job_id=%s)", job_id)
     await asyncio.to_thread(_write_raw_html_sync, raw_dir, rewrite_result.html)
     return raw_dir
 
 
 async def module_scraper(job_id: int, target_url: str) -> None:
+    logger.info("module_scraper: start (job_id=%s)", job_id)
     raw_dir = await scrape(job_id, target_url)
+    logger.info("module_scraper: raw_dir=%s job_id=%s", raw_dir.as_posix(), job_id)
     await clean(raw_dir, job_id, base_url=target_url)
+    logger.info("module_scraper: done (job_id=%s)", job_id)

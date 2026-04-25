@@ -12,14 +12,14 @@ class DomMutatorOrchestrationTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.root = Path(self.temp_dir.name)
         self.db_path = self.root / "test.db"
-        self.previous_database_url = database.DATABASE_URL
+        self.previous_database_url = config.DATABASE_URL
         self.previous_jobs_workdir = config.JOBS_WORKDIR
-        database.DATABASE_URL = str(self.db_path)
+        config.DATABASE_URL = str(self.db_path)
         config.JOBS_WORKDIR = self.root / "jobs"
         database.init_db()
 
     def tearDown(self) -> None:
-        database.DATABASE_URL = self.previous_database_url
+        config.DATABASE_URL = self.previous_database_url
         config.JOBS_WORKDIR = self.previous_jobs_workdir
         self.temp_dir.cleanup()
 

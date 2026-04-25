@@ -4,6 +4,7 @@ import logging
 import random
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Final
 
@@ -246,10 +247,25 @@ def _mutate_js_files(
     id_map: dict[str, str],
     job_id: int,
 ) -> None:
-    for js_file in mutated_dir.rglob("*.js"):
+    js_paths = list(mutated_dir.rglob("*.js"))
+    logger.info("dom_mutator: %d .js files job_id=%s", len(js_paths), job_id)
+    for js_file in js_paths:
         try:
+            t_js = time.perf_counter()
             js_text = js_file.read_text(encoding="utf-8", errors="replace")
+            logger.info(
+                "dom_mutator: js %s (%d bytes) job_id=%s",
+                js_file.relative_to(mutated_dir).as_posix(),
+                len(js_text),
+                job_id,
+            )
             mutated_js = mutate_js_string(js_text, class_map, id_map)
+            logger.info(
+                "dom_mutator: js %s done in %.2fs job_id=%s",
+                js_file.name,
+                time.perf_counter() - t_js,
+                job_id,
+            )
             if mutated_js != js_text:
                 js_file.write_text(mutated_js, encoding="utf-8")
         except OSError as exc:
@@ -264,14 +280,29 @@ def apply_mutations(
     job_id: int,
 ) -> None:
     class_map, id_map = _split_selector_map(selector_map)
+    logger.info(
+        "dom_mutator: apply_mutations class=%d id=%d job_id=%s",
+        len(class_map),
+        len(id_map),
+        job_id,
+    )
 
     html_file = mutated_dir / "index.html"
+    t0 = time.perf_counter()
+    logger.info("dom_mutator: mutating index.html job_id=%s", job_id)
     _mutate_html_file(html_file, class_map, id_map, selector_map)
+    logger.info(
+        "dom_mutator: index.html done in %.2fs job_id=%s",
+        time.perf_counter() - t0,
+        job_id,
+    )
     _mutate_css_files(mutated_dir, selector_map, job_id)
     _mutate_js_files(mutated_dir, class_map, id_map, job_id)
 
 
 def mutate_cleaned_tree(job_id: int) -> Path:
+    t0 = time.perf_counter()
+    logger.info("dom_mutator: start job_id=%s", job_id)
     job_dir = get_job_dir(job_id)
     cleaned_dir = job_dir / "cleaned"
     mutated_dir = job_dir / "mutated"
@@ -281,14 +312,34 @@ def mutate_cleaned_tree(job_id: int) -> Path:
 
     if mutated_dir.exists():
         shutil.rmtree(mutated_dir)
+    logger.info(
+        "dom_mutator: copytree %s -> %s", cleaned_dir.as_posix(), mutated_dir.as_posix()
+    )
     shutil.copytree(cleaned_dir, mutated_dir)
+    logger.info("dom_mutator: copytree done in %.2fs", time.perf_counter() - t0)
 
+    t1 = time.perf_counter()
     css_files = list(mutated_dir.rglob("*.css"))
+    logger.info("dom_mutator: %d css files, building selector map", len(css_files))
     selector_map = build_selector_map(css_files)
+    logger.info(
+        "dom_mutator: selector_map %d entries in %.2fs",
+        len(selector_map),
+        time.perf_counter() - t1,
+    )
+
+    t2 = time.perf_counter()
     apply_mutations(mutated_dir, selector_map, job_id)
+    logger.info(
+        "dom_mutator: apply_mutations done in %.2fs (total %.2fs)",
+        time.perf_counter() - t2,
+        time.perf_counter() - t0,
+    )
     return mutated_dir
 
 
 async def module_dom_mutator(job_id: int) -> None:
+    logger.info("module_dom_mutator: await to_thread job_id=%s", job_id)
     await asyncio.to_thread(mutate_cleaned_tree, job_id)
+    logger.info("module_dom_mutator: finished job_id=%s", job_id)
 

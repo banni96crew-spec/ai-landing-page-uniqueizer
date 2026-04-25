@@ -1,6 +1,9 @@
+import os
 import sqlite3
+import threading
 from pathlib import Path
-from backend.config import DATABASE_URL  # Берем путь из единого конфига
+
+from backend import config
 
 # Определяем DDL (структуру базы) на случай, если файла миграции нет
 INLINE_DDL = """
@@ -58,30 +61,91 @@ BEGIN
 END;
 """
 
-def get_connection() -> sqlite3.Connection:
-    """Создает подключение к БД с правильными настройками для FastAPI."""
-    # Превращаем строку из конфига в объект Path и создаем папки, если их нет
-    db_path = Path(DATABASE_URL).expanduser()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+# Canonical DDL lives at repo root: migrations/001_init.sql (not under backend/).
+MIGRATIONS_PATH = Path(__file__).resolve().parents[1] / "migrations" / "001_init.sql"
 
-    conn = sqlite3.connect(
-        str(db_path),
-        check_same_thread=False, # Важно для асинхронности FastAPI
-        timeout=10,
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_ENSURED_PATHS: set[str] = set()
+
+
+def _table_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    allowed = ("jobs", "settings", "logs", "artifacts")
+    if table not in allowed:
+        raise ValueError(f"unsupported table for PRAGMA: {table}")
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(r[1]) for r in rows}
+
+
+def ensure_db_schema(conn: sqlite3.Connection) -> None:
+    """Align legacy SQLite files with current DDL (additive ALTER + triggers).
+
+    Older DBs may have ``jobs`` without ``updated_at`` while
+    ``trg_jobs_updated_at`` still fires on UPDATE, causing
+    ``no such column: updated_at``.
+    """
+    job_cols = _table_column_names(conn, "jobs")
+    if not job_cols:
+        return
+    if "updated_at" not in job_cols:
+        conn.execute("DROP TRIGGER IF EXISTS trg_jobs_updated_at")
+        # SQLite ADD COLUMN allows only *constant* defaults; datetime('now') is rejected.
+        conn.execute(
+            "ALTER TABLE jobs ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+        )
+        conn.execute(
+            "UPDATE jobs SET updated_at = datetime('now') "
+            "WHERE TRIM(updated_at) = '' OR updated_at IS NULL"
+        )
+
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_jobs_updated_at
+        AFTER UPDATE ON jobs
+        BEGIN
+            UPDATE jobs SET updated_at = datetime('now') WHERE id = NEW.id;
+        END;
+        """
     )
-    # Позволяет обращаться к полям по именам: row['status'] вместо row[2]
+
+    settings_cols = _table_column_names(conn, "settings")
+    if settings_cols and "updated_at" not in settings_cols:
+        conn.execute(
+            "ALTER TABLE settings ADD COLUMN updated_at TEXT DEFAULT ''"
+        )
+        conn.execute(
+            "UPDATE settings SET updated_at = datetime('now') "
+            "WHERE TRIM(COALESCE(updated_at, '')) = ''"
+        )
+
+
+def get_connection():
+    # Read dynamically so tests can override config.DATABASE_URL.
+    db_url = str(config.DATABASE_URL)
+    db_path = db_url.replace("sqlite:///", "").replace("sqlite://", "")
+    absolute_path = os.path.abspath(db_path)
+
+    conn = sqlite3.connect(absolute_path)
     conn.row_factory = sqlite3.Row
 
-    # Включаем WAL-режим (ускоряет работу при одновременном чтении и записи)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+
+    with _SCHEMA_LOCK:
+        if absolute_path not in _SCHEMA_ENSURED_PATHS:
+            ensure_db_schema(conn)
+            conn.commit()
+            _SCHEMA_ENSURED_PATHS.add(absolute_path)
+
     return conn
 
 def init_db() -> None:
     """Инициализирует структуру базы данных."""
     conn = get_connection()
     try:
-        conn.executescript(INLINE_DDL)
+        ddl = INLINE_DDL
+        if MIGRATIONS_PATH.exists():
+            ddl = MIGRATIONS_PATH.read_text(encoding="utf-8")
+        conn.executescript(ddl)
         conn.commit()
     finally:
         conn.close()

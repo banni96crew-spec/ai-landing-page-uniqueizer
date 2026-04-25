@@ -15,13 +15,13 @@ class DomCleanerTests(unittest.IsolatedAsyncioTestCase):
         config.JOBS_WORKDIR = self.temp_path / "jobs"
 
         self.db_path = self.temp_path / "test.db"
-        self.prev_database_url = database.DATABASE_URL
-        database.DATABASE_URL = str(self.db_path)
+        self.prev_database_url = config.DATABASE_URL
+        config.DATABASE_URL = str(self.db_path)
         database.init_db()
 
     def tearDown(self) -> None:
         config.JOBS_WORKDIR = self.prev_jobs_workdir
-        database.DATABASE_URL = self.prev_database_url
+        config.DATABASE_URL = self.prev_database_url
         self.temp_dir.cleanup()
 
     async def test_cleaner_clones_raw_to_cleaned_and_sanitizes_index_html(self) -> None:

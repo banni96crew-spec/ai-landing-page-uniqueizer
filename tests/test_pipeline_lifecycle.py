@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from backend import database
+from backend import config, database
 from backend.job_progress import calculate_progress_pct
 from backend.state import JOB_QUEUES
 from backend.worker import pipeline
@@ -13,14 +13,14 @@ class PipelineLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "test.db"
-        self.previous_database_url = database.DATABASE_URL
-        database.DATABASE_URL = str(self.db_path)
+        self.previous_database_url = config.DATABASE_URL
+        config.DATABASE_URL = str(self.db_path)
         JOB_QUEUES.clear()
         database.init_db()
 
     def tearDown(self) -> None:
         JOB_QUEUES.clear()
-        database.DATABASE_URL = self.previous_database_url
+        config.DATABASE_URL = self.previous_database_url
         self.temp_dir.cleanup()
 
     def _create_job(self, status: str = "running") -> int:
@@ -118,14 +118,14 @@ class JobProgressTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "test.db"
-        self.previous_database_url = database.DATABASE_URL
-        database.DATABASE_URL = str(self.db_path)
+        self.previous_database_url = config.DATABASE_URL
+        config.DATABASE_URL = str(self.db_path)
         JOB_QUEUES.clear()
         database.init_db()
 
     def tearDown(self) -> None:
         JOB_QUEUES.clear()
-        database.DATABASE_URL = self.previous_database_url
+        config.DATABASE_URL = self.previous_database_url
         self.temp_dir.cleanup()
 
     def _create_job_with_logs(self, status: str, messages: list[str]) -> int:

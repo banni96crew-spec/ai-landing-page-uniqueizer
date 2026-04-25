@@ -38,42 +38,54 @@ def mutate_js_string(
     class_map and id_map use bare names only, for example {"btn": "x1234"}.
     Unsupported patterns, including string concatenation, are intentionally left
     unchanged by only replacing captured literals inside the six PRD contexts.
+
+    Implementation note: one merged alternation per pattern (6 passes for classes,
+    1 for ids) avoids O(len(class_map) * 6 * len(file)) full-string rescans.
     """
     mutated = js_content
 
-    for class_name, alias in class_map.items():
-        escaped_class_name = re.escape(class_name)
-        for pattern_index, group_index in _CLASS_VALUE_GROUP_BY_PATTERN_INDEX.items():
+    if class_map:
+        alias_by_lower = {k.lower(): v for k, v in class_map.items()}
+        names_sorted = sorted(class_map.keys(), key=len, reverse=True)
+        class_alt = "|".join(re.escape(n) for n in names_sorted)
+
+        for pattern_index in _CLASS_VALUE_GROUP_BY_PATTERN_INDEX:
+            group_index = _CLASS_VALUE_GROUP_BY_PATTERN_INDEX[pattern_index]
             pattern = JS_REPLACE_PATTERNS[pattern_index].format(
-                class_name=escaped_class_name
-            )
-            mutated = re.sub(
-                pattern,
-                lambda match, replacement=alias, index=group_index: _replace_group(
-                    match,
-                    index,
-                    replacement,
-                ),
-                mutated,
-                flags=re.IGNORECASE,
+                class_name=f"(?:{class_alt})"
             )
 
-    for id_name, alias in id_map.items():
-        escaped_id_name = re.escape(id_name)
+            def _class_repl(
+                match: re.Match[str],
+                *,
+                gi: int = group_index,
+                lookup: dict[str, str] = alias_by_lower,
+            ) -> str:
+                raw = match.group(gi)
+                replacement = lookup[raw.lower()]
+                return _replace_group(match, gi, replacement)
+
+            mutated = re.sub(pattern, _class_repl, mutated, flags=re.IGNORECASE)
+
+    if id_map:
+        alias_by_lower_id = {k.lower(): v for k, v in id_map.items()}
+        ids_sorted = sorted(id_map.keys(), key=len, reverse=True)
+        id_alt = "|".join(re.escape(n) for n in ids_sorted)
+
         for pattern_index, group_index in _ID_VALUE_GROUP_BY_PATTERN_INDEX.items():
-            pattern = JS_REPLACE_PATTERNS[pattern_index].format(
-                id_name=escaped_id_name
-            )
-            mutated = re.sub(
-                pattern,
-                lambda match, replacement=alias, index=group_index: _replace_group(
-                    match,
-                    index,
-                    replacement,
-                ),
-                mutated,
-                flags=re.IGNORECASE,
-            )
+            pattern = JS_REPLACE_PATTERNS[pattern_index].format(id_name=f"(?:{id_alt})")
+
+            def _id_repl(
+                match: re.Match[str],
+                *,
+                gi: int = group_index,
+                lookup: dict[str, str] = alias_by_lower_id,
+            ) -> str:
+                raw = match.group(gi)
+                replacement = lookup[raw.lower()]
+                return _replace_group(match, gi, replacement)
+
+            mutated = re.sub(pattern, _id_repl, mutated, flags=re.IGNORECASE)
 
     return mutated
 
