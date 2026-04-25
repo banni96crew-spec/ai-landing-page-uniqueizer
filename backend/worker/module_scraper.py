@@ -26,7 +26,8 @@ from backend.config import ASSET_DOWNLOAD_TIMEOUT_SECONDS, SCRAPER_PAGE_TIMEOUT_
 from backend.database import get_connection, log_message
 from backend.worker.asset_rewriter import AssetRewriteResult, rewrite_asset_urls
 from backend.worker.css_url_rewriter import rewrite_css_urls
-from backend.worker.dom_cleaner import clean_job_html
+from backend.worker.dom_cleaner import finalize_clean_sync, prepare_clean_sync
+from backend.worker.google_fonts import download_google_fonts
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,84 @@ async def _collect_html(page: object) -> str:
     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     await page.wait_for_timeout(LAZY_LOAD_WAIT_MS)
     return await page.content()
+
+
+def _inject_font_stylesheets_in_head_sync(html: str, hrefs: list[str]) -> str:
+    if not hrefs:
+        return html
+    links = "".join(f'<link rel="stylesheet" href="{h}">' for h in hrefs)
+    lowered = html.lower()
+    head_close = lowered.find("</head>")
+    if head_close >= 0:
+        return html[:head_close] + links + html[head_close:]
+    head_open = lowered.find("<head")
+    if head_open >= 0:
+        gt = html.find(">", head_open)
+        if gt >= 0:
+            return html[: gt + 1] + links + html[gt + 1 :]
+    return links + html
+
+
+def _write_font_css_sync(path: Path, css_text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(css_text, encoding="utf-8")
+
+
+async def clean(raw_dir: Path, job_id: int, *, base_url: str | None = None) -> Path:
+    """Clone raw → cleaned (BS4), self-host Google Fonts via httpx, write index + strip @import (M2.4–M2.7)."""
+    cleaned_dir, html, stats, font_urls = await asyncio.to_thread(
+        prepare_clean_sync, job_id=job_id, raw_dir=raw_dir, base_url=base_url
+    )
+
+    font_hrefs: list[str] = []
+    if font_urls and httpx is not None:
+        timeout = httpx.Timeout(ASSET_DOWNLOAD_TIMEOUT_SECONDS)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            written_idx = 0
+            for css_url in font_urls:
+                rewritten = await download_google_fonts(
+                    css_url=css_url,
+                    fonts_dir=cleaned_dir / "assets" / "fonts",
+                    client=client,
+                    job_id=job_id,
+                )
+                if rewritten.strip():
+                    rel_href = f"./assets/fonts/gfonts_{written_idx}.css"
+                    dest = cleaned_dir / "assets" / "fonts" / f"gfonts_{written_idx}.css"
+                    await asyncio.to_thread(_write_font_css_sync, dest, rewritten)
+                    font_hrefs.append(rel_href)
+                    written_idx += 1
+
+    if font_hrefs:
+        html = await asyncio.to_thread(_inject_font_stylesheets_in_head_sync, html, font_hrefs)
+
+    result = await asyncio.to_thread(
+        finalize_clean_sync, cleaned_dir, html, stats, font_urls
+    )
+
+    s = result.stats
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: removed tracker scripts: {s.removed_tracker_scripts}"
+    )
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: removed tracker iframes: {s.removed_tracker_iframes}"
+    )
+    await _log_job_message(job_id, "info", f"dom_cleaner: removed noscript tags: {s.removed_noscripts}")
+    await _log_job_message(job_id, "info", f"dom_cleaner: removed CSP meta tags: {s.removed_csp_meta}")
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: removed HTML comments: {s.removed_html_comments}"
+    )
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: removed Google Fonts link tags: {s.removed_google_font_links}"
+    )
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: stripped Google Fonts @import rules: {s.removed_font_imports}"
+    )
+    await _log_job_message(
+        job_id, "info", f"dom_cleaner: unwrapped bdo/cite tags: {s.removed_bdo_cite}"
+    )
+
+    return result.cleaned_dir
 
 
 async def _rewrite_scraped_assets(
@@ -180,28 +259,4 @@ async def scrape(job_id: int, target_url: str) -> Path:
 
 async def module_scraper(job_id: int, target_url: str) -> None:
     raw_dir = await scrape(job_id, target_url)
-    result = await clean_job_html(job_id, raw_dir, base_url=target_url)
-    stats = result.stats
-
-    await _log_job_message(
-        job_id, "info", f"dom_cleaner: removed tracker scripts: {stats.removed_tracker_scripts}"
-    )
-    await _log_job_message(
-        job_id, "info", f"dom_cleaner: removed tracker iframes: {stats.removed_tracker_iframes}"
-    )
-    await _log_job_message(
-        job_id, "info", f"dom_cleaner: removed noscript tags: {stats.removed_noscripts}"
-    )
-    await _log_job_message(job_id, "info", f"dom_cleaner: removed CSP meta tags: {stats.removed_csp_meta}")
-    await _log_job_message(
-        job_id, "info", f"dom_cleaner: removed HTML comments: {stats.removed_html_comments}"
-    )
-    await _log_job_message(
-        job_id, "info", f"dom_cleaner: removed Google Fonts link tags: {stats.removed_google_font_links}"
-    )
-    await _log_job_message(
-        job_id, "info", f"dom_cleaner: stripped Google Fonts @import rules: {stats.removed_font_imports}"
-    )
-    await _log_job_message(
-        job_id, "info", f"dom_cleaner: unwrapped bdo/cite tags: {stats.removed_bdo_cite}"
-    )
+    await clean(raw_dir, job_id, base_url=target_url)

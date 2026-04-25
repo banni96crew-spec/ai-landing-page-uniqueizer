@@ -206,7 +206,8 @@ def _write_index_and_strip_css_imports_sync(cleaned_dir: Path, index_html: str) 
     return total_imports
 
 
-def _clone_and_clean_sync(*, job_id: int, raw_dir: Path, base_url: str | None) -> DomCleanResult:
+def prepare_clean_sync(*, job_id: int, raw_dir: Path, base_url: str | None) -> tuple[Path, str, DomCleanStats, tuple[str, ...]]:
+    """Clone raw → cleaned, run BS4 hygiene, return HTML before index write + font downloads."""
     expected_raw_dir = get_job_dir(job_id) / "raw"
     if raw_dir != expected_raw_dir:
         raise ValueError(f"raw_dir must be {expected_raw_dir}, got {raw_dir}")
@@ -223,18 +224,26 @@ def _clone_and_clean_sync(*, job_id: int, raw_dir: Path, base_url: str | None) -
 
     raw_html = raw_index.read_text(encoding="utf-8")
     cleaned_html, stats, google_font_css_urls = _clean_html_sync(raw_html, base_url)
-    removed_font_imports = _write_index_and_strip_css_imports_sync(cleaned_dir, cleaned_html)
-    stats = DomCleanStats(
-        removed_tracker_scripts=stats.removed_tracker_scripts,
-        removed_tracker_iframes=stats.removed_tracker_iframes,
-        removed_noscripts=stats.removed_noscripts,
-        removed_csp_meta=stats.removed_csp_meta,
-        removed_html_comments=stats.removed_html_comments,
-        removed_google_font_links=stats.removed_google_font_links,
-        removed_font_imports=removed_font_imports,
-        removed_bdo_cite=stats.removed_bdo_cite,
-    )
+    return cleaned_dir, cleaned_html, stats, google_font_css_urls
 
+
+def finalize_clean_sync(
+    cleaned_dir: Path,
+    index_html: str,
+    stats_partial: DomCleanStats,
+    google_font_css_urls: tuple[str, ...],
+) -> DomCleanResult:
+    removed_font_imports = _write_index_and_strip_css_imports_sync(cleaned_dir, index_html)
+    stats = DomCleanStats(
+        removed_tracker_scripts=stats_partial.removed_tracker_scripts,
+        removed_tracker_iframes=stats_partial.removed_tracker_iframes,
+        removed_noscripts=stats_partial.removed_noscripts,
+        removed_csp_meta=stats_partial.removed_csp_meta,
+        removed_html_comments=stats_partial.removed_html_comments,
+        removed_google_font_links=stats_partial.removed_google_font_links,
+        removed_font_imports=removed_font_imports,
+        removed_bdo_cite=stats_partial.removed_bdo_cite,
+    )
     cleaned_index = cleaned_dir / "index.html"
     return DomCleanResult(
         cleaned_dir=cleaned_dir,
@@ -242,6 +251,11 @@ def _clone_and_clean_sync(*, job_id: int, raw_dir: Path, base_url: str | None) -
         stats=stats,
         google_font_css_urls=google_font_css_urls,
     )
+
+
+def _clone_and_clean_sync(*, job_id: int, raw_dir: Path, base_url: str | None) -> DomCleanResult:
+    cleaned_dir, html, stats, urls = prepare_clean_sync(job_id=job_id, raw_dir=raw_dir, base_url=base_url)
+    return finalize_clean_sync(cleaned_dir, html, stats, urls)
 
 
 async def clean_job_html(

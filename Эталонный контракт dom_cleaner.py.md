@@ -20,9 +20,17 @@ dom_cleaner.py это отдельный файл, но не отдельный 
 Playwright scrape
 rewrite/download ассетов в raw/
 запись raw/index.html
-вызов dom_cleaner.py
-получение cleaned/
+санитарная очистка и подготовка `cleaned/` (см. ниже: `module_scraper.clean` или эквивалент)
 только после этого Module 1 считается успешным
+
+**Оркестрация в `module_scraper.clean` (M2.4–M2.7):** между BS4 и финальной записью вставлено скачивание Google Fonts через `httpx` и `google_fonts.download_google_fonts`, поэтому `dom_cleaner` экспортирует **двухфазный** sync-API, который вызывается из `asyncio.to_thread`:
+
+1. `prepare_clean_sync(job_id, raw_dir, base_url)` — клон `raw → cleaned`, разбор BeautifulSoup, счётчики (кроме `removed_font_imports`, он пока `0`), список абсолютных URL удалённых `<link>` на `fonts.googleapis.com`, **ещё без** перезаписи `index.html` на диске в финальном виде (HTML возвращается строкой).
+2. В `module_scraper`: при наличии `httpx` — для каждого URL из шага 1 скачать CSS/woff2, записать `cleaned/assets/fonts/gfonts_{n}.css`, при необходимости вставить в `<head>` локальные `<link rel="stylesheet" href="./assets/fonts/...">`.
+3. `finalize_clean_sync(cleaned_dir, index_html, stats_partial, google_font_css_urls)` — запись `cleaned/index.html`, обход `cleaned/**/*.css`, удаление `@import` на `fonts.googleapis.com`, заполнение `removed_font_imports` в итоговом `DomCleanStats`, возврат `DomCleanResult`.
+
+**`clean_job_html` (async):** одна обёртка `asyncio.to_thread` вокруг полного sync-пути `prepare_clean_sync` → `finalize_clean_sync` **без** HTTP-скачивания шрифтов и без записи `gfonts_*.css`. Подходит для тестов и сценариев «только DOM/CSS-гигиена»; полное M2.5 self-host — только через `module_scraper.clean`.
+
 Публичный контракт
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,7 +51,16 @@ class DomCleanResult:
     stats: DomCleanStats
     google_font_css_urls: tuple[str, ...] = field(default_factory=tuple)
 async def clean_job_html(job_id: int, raw_dir: Path, *, base_url: str | None = None) -> DomCleanResult:
-    """Read raw/index.html, create cleaned/, return cleaned_dir + stats."""
+    """Read raw/index.html, create cleaned/, return cleaned_dir + stats (no httpx font self-host)."""
+def prepare_clean_sync(*, job_id: int, raw_dir: Path, base_url: str | None) -> tuple[Path, str, DomCleanStats, tuple[str, ...]]:
+    """Clone raw→cleaned, BS4 rules; returns cleaned HTML string + font URLs (see orchestration above)."""
+def finalize_clean_sync(
+    cleaned_dir: Path,
+    index_html: str,
+    stats_partial: DomCleanStats,
+    google_font_css_urls: tuple[str, ...],
+) -> DomCleanResult:
+    """Write index.html, strip Google Fonts @import in all CSS under cleaned_dir, return final result."""
 Вход
 Обязательный вход:
 
@@ -103,7 +120,7 @@ inline event handlers (`on*`) не удалять — часть бизнес-л
 rename id/class
 JS паттерн-замены
 DOM noise injection
-HTTP-скачивание шрифтов (только сбор URL и очистка HTML/CSS)
+HTTP-скачивание шрифтов с `fonts.googleapis.com` / `fonts.gstatic.com` (это `google_fonts.py` + `module_scraper.clean`; в `dom_cleaner` только удаление внешних `<link>` и сбор абсолютных URL + стрип `@import` в уже скачанных локальных CSS)
 запись pipeline marker
 прямую работу со статусами jobs
 Это зона module_scraper.py, asset_rewriter.py, google_fonts.py, module_dom_mutator.py, pipeline.py.
@@ -151,10 +168,10 @@ BeautifulSoup(..., "lxml")
 Это главный стык между cleaner и mutator.
 
 Минимальный тестовый контракт
-Для dom_cleaner.py обязательные сценарии:
+Для `dom_cleaner.py` / `clean_job_html` обязательные сценарии:
 
-Удаляет только трекерные script src / iframe src по TRACKER_DOMAINS
-Сохраняет inline script и не-трекерные iframe
+Удаляет только трекерные `script src` / `iframe src` по TRACKER_DOMAINS, в том числе после нормализации `urljoin` с `base_url` (включая относительные URL и формы вида `//host/...`)
+Сохраняет inline `<script>` без `src` и не-трекерные iframe
 Удаляет noscript, CSP meta, HTML-комментарии
 Разворачивает bdo/cite
 Удаляет link на fonts.googleapis.com и возвращает URL в google_font_css_urls
@@ -163,6 +180,10 @@ BeautifulSoup(..., "lxml")
 Не меняет raw/index.html
 Создаёт self-contained cleaned/
 Возвращает корректные счётчики в stats
+
+Для `module_scraper.clean` (интеграция с БД):
+
+После успешного прохода в таблице `logs` для `job_id` появляются `info`-сообщения с префиксом `dom_cleaner:` по всем полям `DomCleanStats` (см. раздел «Логирование»); при отсутствии `httpx` блок скачивания шрифтов пропускается, остальная санитаризация выполняется как обычно
 Короткая формула контракта
 dom_cleaner.py = pure-ish async wrapper around HTML/CSS sanitization:
 

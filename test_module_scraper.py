@@ -5,9 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlparse
 
-from backend import database
+from backend import config, database
 from backend.worker.asset_rewriter import AssetRewriteResult
-from backend.worker import module_scraper
+from backend.worker import dom_cleaner, module_scraper
 from backend.worker.dom_cleaner import DomCleanResult, DomCleanStats
 
 
@@ -250,16 +250,63 @@ class ModuleScraperTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(return_value=self.temp_path / "jobs" / "5" / "raw"),
         ) as scrape_mock, patch.object(
             module_scraper,
-            "clean_job_html",
-            new=AsyncMock(return_value=dummy_result),
+            "clean",
+            new=AsyncMock(return_value=dummy_result.cleaned_dir),
         ) as cleaner_mock:
             result = await module_scraper.module_scraper(5, "https://example.com")
 
         self.assertIsNone(result)
         scrape_mock.assert_awaited_once_with(5, "https://example.com")
         cleaner_mock.assert_awaited_once_with(
-            5, self.temp_path / "jobs" / "5" / "raw", base_url="https://example.com"
+            self.temp_path / "jobs" / "5" / "raw", 5, base_url="https://example.com"
         )
+
+    async def test_clean_creates_cleaned_dir_and_logs_dom_cleaner_stats(self) -> None:
+        if dom_cleaner.BeautifulSoup is None:
+            self.skipTest("beautifulsoup4 is not installed in this environment")
+
+        prev_jobs_workdir = config.JOBS_WORKDIR
+        config.JOBS_WORKDIR = self.temp_path / "jobs_clean_test"
+        try:
+            job_id = 99
+            self._insert_job(job_id)
+            raw_dir = config.get_job_dir(job_id) / "raw"
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            (raw_dir / "index.html").write_text(
+                "<html><head>"
+                '<script src="https://www.googletagmanager.com/gtag/js?id=1"></script>'
+                '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=X">'
+                "</head><body><!--x--><noscript>n</noscript></body></html>",
+                encoding="utf-8",
+            )
+
+            cleaned_dir = await module_scraper.clean(
+                raw_dir, job_id, base_url="https://example.com/landing"
+            )
+
+            self.assertEqual(cleaned_dir, config.get_job_dir(job_id) / "cleaned")
+            idx = (cleaned_dir / "index.html").read_text(encoding="utf-8").lower()
+            self.assertNotIn("googletagmanager.com", idx)
+            self.assertNotIn("fonts.googleapis.com", idx)
+            self.assertNotIn("<noscript", idx)
+            self.assertNotIn("<!--x-->", idx)
+            self.assertEqual((raw_dir / "index.html").read_text(encoding="utf-8").count("googletagmanager"), 1)
+
+            messages = [m for _, m in self._get_logs(job_id)]
+            self.assertTrue(
+                any(m.startswith("dom_cleaner: removed tracker scripts: 1") for m in messages)
+            )
+            self.assertTrue(
+                any(m.startswith("dom_cleaner: removed Google Fonts link tags: 1") for m in messages)
+            )
+            self.assertTrue(
+                any(m.startswith("dom_cleaner: removed noscript tags: 1") for m in messages)
+            )
+            self.assertTrue(
+                any(m.startswith("dom_cleaner: removed HTML comments: 1") for m in messages)
+            )
+        finally:
+            config.JOBS_WORKDIR = prev_jobs_workdir
 
 
 class _FakeStreamResponse:

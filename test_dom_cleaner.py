@@ -109,6 +109,30 @@ class DomCleanerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats.removed_font_imports, 1)
         self.assertEqual(stats.removed_bdo_cite, 2)
 
+    async def test_protocol_relative_tracker_script_resolved_and_removed(self) -> None:
+        """//host/... inherits scheme from base_url; GTM script must match TRACKER_DOMAINS."""
+        if dom_cleaner.BeautifulSoup is None:
+            self.skipTest("beautifulsoup4 is not installed in this environment")
+
+        job_id = 124
+        raw_dir = config.get_job_dir(job_id) / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_html = (
+            "<html><head>"
+            '<script src="//www.googletagmanager.com/gtag/js?id=1"></script>'
+            "<script>keepInline();</script>"
+            "</head><body></body></html>"
+        )
+        (raw_dir / "index.html").write_text(raw_html, encoding="utf-8")
+
+        result = await dom_cleaner.clean_job_html(
+            job_id, raw_dir, base_url="https://landing.example/page"
+        )
+        cleaned = result.index_html_path.read_text(encoding="utf-8").lower()
+        self.assertIn("keepinline", cleaned)
+        self.assertNotIn("googletagmanager.com", cleaned)
+        self.assertEqual(result.stats.removed_tracker_scripts, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
