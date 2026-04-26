@@ -21,10 +21,12 @@ from backend.config import (
     get_job_dir,
 )
 from backend.database import get_connection, init_db
+from backend.state import set_ws_broadcast_loop
 from backend.routers.artifacts import router as artifacts_router
 from backend.routers.jobs import router as jobs_router
 from backend.routers.settings import router as settings_router
-from backend.worker.runner import poll_loop
+from backend.worker.runner import worker_loop
+from backend.ws.log_broadcaster import router as log_broadcaster_router
 
 logger = logging.getLogger(__name__)
 
@@ -101,17 +103,21 @@ async def lifespan(app: FastAPI):
     try:
         conn.execute(
             "UPDATE jobs SET status='failed', "
-            "error_message='Interrupted by server restart' "
+            "error_message='Worker interrupted' "
             "WHERE status='running'"
         )
         conn.commit()
     finally:
         conn.close()
 
-    worker_task = asyncio.create_task(poll_loop())
+    set_ws_broadcast_loop(asyncio.get_running_loop())
+
+    worker_task = asyncio.create_task(worker_loop())
     cleanup_task = asyncio.create_task(_ttl_cleanup_loop())
 
     yield
+
+    set_ws_broadcast_loop(None)
 
     worker_task.cancel()
     cleanup_task.cancel()
@@ -135,6 +141,7 @@ app.add_middleware(
 app.include_router(jobs_router)
 app.include_router(settings_router)
 app.include_router(artifacts_router)
+app.include_router(log_broadcaster_router)
 
 @app.get("/")
 async def root():

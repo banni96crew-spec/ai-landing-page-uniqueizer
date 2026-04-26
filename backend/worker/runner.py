@@ -1,11 +1,10 @@
 import asyncio
 import logging
-import os
 from typing import Any
 
 from backend.config import JOB_TIMEOUT_SECONDS, WORKER_POLL_INTERVAL
 from backend.database import get_connection
-from backend.state import JOB_QUEUES
+from backend.state import JOB_QUEUES, set_ws_broadcast_loop
 from backend.worker.pipeline import log_job_message, mark_job_failed, run_pipeline
 
 logger = logging.getLogger(__name__)
@@ -41,62 +40,45 @@ MODULE_DONE_MARKERS = {
 def _claim_next_pending_job_sync() -> dict[str, Any] | None:
     conn = get_connection()
     try:
-        all_rows = conn.execute("SELECT * FROM jobs").fetchall()
-        print(f"🔍 В базе {len(all_rows)} задач. Проверяю каждую:")
-
-        target_row = None
-        for row in all_rows:
-            raw_status = row["status"]
-            clean_status = str(raw_status).strip().lower()
-
-            # ВЫВОДИМ ПОДРОБНОСТИ О КАЖДОЙ ЗАДАЧЕ
-            print(f"   - ID {row['id']}: статус='{raw_status}' | длина={len(str(raw_status))} | после чистки='{clean_status}'")
-
-            # Проверяем "мягким" поиском (если в статусе есть хоть намек на pend)
-            if "pend" in clean_status:
-                target_row = row
-                break
-
-        if target_row is None:
-            print("   ❌ Ни одна задача не подошла под фильтр 'pending'")
+        # EC-15: atomic claim (pending -> running) with rowcount check.
+        # Use an explicit transaction to avoid races under concurrent workers.
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT id, target_url FROM jobs WHERE status = 'pending' "
+            "ORDER BY created_at ASC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            conn.execute("COMMIT")
             return None
 
-        job_id = target_row["id"]
-        print(f"🎯 ПОДХОДИТ! Забираю ID {job_id}")
+        job_id = int(row["id"])
+        cursor = conn.execute(
+            "UPDATE jobs SET status = 'running' WHERE id = ? AND status = 'pending'",
+            (job_id,),
+        )
+        if cursor.rowcount != 1:
+            conn.execute("COMMIT")
+            return None
 
-        # ОБЯЗАТЕЛЬНЫЙ COMMIT для фиксации статуса running
-        conn.execute("UPDATE jobs SET status = 'running' WHERE id = ?", (job_id,))
-        conn.commit()
-
-        return dict(target_row)
-    except Exception as e:
-        print(f"❌ ОШИБКА БД: {e}")
-        import traceback
-        traceback.print_exc()
+        conn.execute("COMMIT")
+        return {"id": job_id, "target_url": str(row["target_url"])}
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except Exception:
+            pass
+        logger.exception("DB error while claiming pending job")
         return None
-    finally:
-        conn.close()
-
-# ФУНКЦИЯ ДЛЯ УСТАНОВКИ СТАТУСА DONE
-def _mark_job_done_sync(job_id: int) -> None:
-    conn = get_connection()
-    try:
-        conn.execute("UPDATE jobs SET status = 'done' WHERE id = ?", (job_id,))
-        conn.commit()
-    except Exception as e:
-        print(f"❌ Ошибка при установке статуса done: {e}")
     finally:
         conn.close()
 
 async def claim_next_pending_job() -> dict[str, Any] | None:
     return await asyncio.to_thread(_claim_next_pending_job_sync)
 
-# АСИНХРОННАЯ ОБЕРТКА ДЛЯ DONE
-async def mark_job_done(job_id: int) -> None:
-    return await asyncio.to_thread(_mark_job_done_sync, job_id)
 
 async def worker_loop() -> None:
     _ensure_worker_console_logging()
+    set_ws_broadcast_loop(asyncio.get_running_loop())
     while True:
         try:
             job = await claim_next_pending_job()
@@ -108,46 +90,35 @@ async def worker_loop() -> None:
 
             job_id = int(job["id"])
             target_url = str(job["target_url"])
-            print(f"🚀 ЗАПУСК ПАЙПЛАЙНА для задачи {job_id} ({target_url})", flush=True)
+            logger.info("worker: claimed job_id=%s target_url=%s", job_id, target_url)
 
             JOB_QUEUES[job_id] = asyncio.Queue(maxsize=1000)
 
             try:
-                print(f"[job {job_id}] DB log: pipeline_start …", flush=True)
-                await log_job_message(job_id, "info", "worker: pipeline_start")
-                print(
-                    f"[job {job_id}] run_pipeline (timeout {JOB_TIMEOUT_SECONDS}s) …",
-                    flush=True,
-                )
+                await log_job_message(job_id, "info", "MARKER:pipeline_started")
                 await asyncio.wait_for(
                     run_pipeline(job_id, target_url),
                     timeout=JOB_TIMEOUT_SECONDS,
                 )
-
-                # ФИКСИРУЕМ УСПЕШНОЕ ЗАВЕРШЕНИЕ В БД
-                await mark_job_done(job_id)
-                print(f"✅ Задача {job_id} успешно завершена и переведена в статус 'done'!", flush=True)
+                logger.info("worker: pipeline finished job_id=%s", job_id)
 
             except asyncio.TimeoutError:
                 error_message = f"Pipeline timeout after {JOB_TIMEOUT_SECONDS}s"
                 await log_job_message(job_id, "error", error_message)
                 await mark_job_failed(job_id, error_message)
             except Exception as pipeline_error:
-                print(f"❌ Ошибка в пайплайне: {pipeline_error}")
+                logger.exception("worker: pipeline failed job_id=%s", job_id)
                 await mark_job_failed(job_id, str(pipeline_error))
             finally:
                 JOB_QUEUES.pop(job_id, None)
 
         except Exception as e:
-            print(f"\n❌ КРИТИЧЕСКАЯ ОШИБКА ВОРКЕРА: {e}")
+            logger.exception("worker_loop unexpected error")
             await asyncio.sleep(WORKER_POLL_INTERVAL)
 
 if __name__ == "__main__":
     _ensure_worker_console_logging()
-    print("\n🚀 --- БОЕВОЙ ВОРКЕР ЗАПУЩЕН ---")
-    print("Использую метод прямого поиска задач...\n")
-
     try:
         asyncio.run(worker_loop())
     except KeyboardInterrupt:
-        print("\n🛑 Воркер остановлен.")
+        pass

@@ -1,9 +1,11 @@
+import asyncio
 import os
 import sqlite3
 import threading
 from pathlib import Path
 
 from backend import config
+from backend.state import JOB_QUEUES, get_ws_broadcast_loop
 
 # Определяем DDL (структуру базы) на случай, если файла миграции нет
 INLINE_DDL = """
@@ -151,9 +153,50 @@ def init_db() -> None:
         conn.close()
 
 def log_message(conn: sqlite3.Connection, job_id: int, level: str, message: str) -> None:
-    """Записывает лог в базу данных."""
-    conn.execute(
+    """Persist log to SQLite, then enqueue a structured copy for WebSocket clients."""
+    cursor = conn.cursor()
+    cursor.execute(
         "INSERT INTO logs (job_id, level, message) VALUES (?, ?, ?)",
         (job_id, level, message),
     )
+    row_id = cursor.lastrowid
+    ts_row = cursor.execute(
+        "SELECT timestamp FROM logs WHERE id = ?",
+        (row_id,),
+    ).fetchone()
+    timestamp = str(ts_row["timestamp"]) if ts_row else ""
     conn.commit()
+
+    if job_id not in JOB_QUEUES:
+        return
+
+    queue = JOB_QUEUES[job_id]
+    item: dict[str, int | str] = {
+        "job_id": job_id,
+        "level": level,
+        "message": message,
+        "timestamp": timestamp,
+    }
+
+    def _push_to_queue() -> None:
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                queue.put_nowait(item)
+            except asyncio.QueueFull:
+                pass
+
+    loop = get_ws_broadcast_loop()
+    if loop is not None and loop.is_running():
+        loop.call_soon_threadsafe(_push_to_queue)
+        return
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    running.call_soon(_push_to_queue)
