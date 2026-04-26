@@ -162,6 +162,17 @@ class JobProgressTests(unittest.TestCase):
             "running",
             ["MODULE_SCRAPER_DONE", "MODULE_DOM_MUTATOR_DONE"],
         )
+        capped_running_job_id = self._create_job_with_logs(
+            "running",
+            [
+                "MODULE_SCRAPER_DONE",
+                "MODULE_DOM_MUTATOR_DONE",
+                "MODULE_AI_REWRITER_DONE",
+                "MODULE_MEDIA_UNIQUEIZER_DONE",
+                "MODULE_PACKER_DONE",
+                "MODULE_PACKER_DONE",  # duplicate marker must not exceed 90%
+            ],
+        )
         failed_job_id = self._create_job_with_logs(
             "failed",
             ["MODULE_SCRAPER_DONE", "MODULE_DOM_MUTATOR_DONE"],
@@ -170,6 +181,7 @@ class JobProgressTests(unittest.TestCase):
         pending_job_id = self._create_job_with_logs("pending", ["MODULE_SCRAPER_DONE"])
 
         self.assertEqual(self._get_progress_pct(running_job_id), 36)
+        self.assertEqual(self._get_progress_pct(capped_running_job_id), 90)
         self.assertEqual(self._get_progress_pct(failed_job_id), 0)
         self.assertEqual(self._get_progress_pct(done_job_id), 100)
         self.assertEqual(self._get_progress_pct(pending_job_id), 0)

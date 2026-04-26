@@ -1,3 +1,4 @@
+import asyncio
 import socket
 import shutil
 from urllib.parse import urlparse
@@ -93,30 +94,33 @@ def list_jobs(
 
 
 @router.get("/{job_id}", response_model=JobDetailResponse)
-def get_job(job_id: int) -> JobDetailResponse:
-    conn = get_connection()
-    try:
-        job = _get_job_or_404(conn, job_id)
-        artifact = conn.execute(
-            "SELECT id, job_id, file_path, file_size, hash, created_at "
-            "FROM artifacts WHERE job_id = ?",
-            (job_id,),
-        ).fetchone()
+async def get_job(job_id: int) -> JobDetailResponse:
+    def _load_sync() -> dict:
+        conn = get_connection()
+        try:
+            job = _get_job_or_404(conn, job_id)
+            artifact = conn.execute(
+                "SELECT id, job_id, file_path, file_size, hash, created_at "
+                "FROM artifacts WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()
 
-        progress_pct = calculate_progress_pct(conn, job_id, str(job["status"]))
+            progress_pct = calculate_progress_pct(conn, job_id, str(job["status"]))
 
-        response_payload = {
-            "id": job["id"],
-            "status": job["status"],
-            "target_url": job["target_url"],
-            "created_at": job["created_at"],
-            "updated_at": job["updated_at"],
-            "artifact": ArtifactResponse.model_validate(dict(artifact)) if artifact else None,
-            "progress_pct": progress_pct,
-        }
-        return JobDetailResponse.model_validate(response_payload)
-    finally:
-        conn.close()
+            return {
+                "id": job["id"],
+                "status": job["status"],
+                "target_url": job["target_url"],
+                "created_at": job["created_at"],
+                "updated_at": job["updated_at"],
+                "artifact": ArtifactResponse.model_validate(dict(artifact)) if artifact else None,
+                "progress_pct": progress_pct,
+            }
+        finally:
+            conn.close()
+
+    payload = await asyncio.to_thread(_load_sync)
+    return JobDetailResponse.model_validate(payload)
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
