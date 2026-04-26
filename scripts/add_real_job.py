@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backend.database import get_connection
 
 conn = get_connection()
-url = "http://books.toscrape.com/"
+url = "https://project17284806.tilda.ws/"
 conn.execute("INSERT INTO jobs (target_url, status) VALUES (?, 'pending')", (url,))
 conn.commit()
 conn.close()

@@ -5,6 +5,8 @@ from collections.abc import Awaitable, Callable
 from backend.database import get_connection, log_message
 from backend.worker.module_ai_rewriter import module_ai_rewriter
 from backend.worker.module_dom_mutator import module_dom_mutator
+from backend.worker.module_media import module_media_uniqueizer
+from backend.worker.module_packer import module_packer
 from backend.worker.module_scraper import module_scraper
 
 PipelineStep = tuple[str, Callable[..., Awaitable[None]], tuple[object, ...]]
@@ -62,16 +64,6 @@ async def mark_job_done(job_id: int) -> None:
 
 async def mark_job_failed(job_id: int, error_message: str) -> None:
     await asyncio.to_thread(_mark_failed_sync, job_id, error_message)
-
-
-async def module_media_uniqueizer(job_id: int) -> None:
-    _ = job_id
-    await asyncio.sleep(1)
-
-
-async def module_packer(job_id: int) -> None:
-    _ = job_id
-    await asyncio.sleep(1)
 
 
 async def run_pipeline(job_id: int, target_url: str) -> None:

@@ -63,7 +63,11 @@ def _claim_next_pending_job_sync() -> dict[str, Any] | None:
 
         job_id = target_row["id"]
         print(f"🎯 ПОДХОДИТ! Забираю ID {job_id}")
+
+        # ОБЯЗАТЕЛЬНЫЙ COMMIT для фиксации статуса running
         conn.execute("UPDATE jobs SET status = 'running' WHERE id = ?", (job_id,))
+        conn.commit()
+
         return dict(target_row)
     except Exception as e:
         print(f"❌ ОШИБКА БД: {e}")
@@ -73,8 +77,23 @@ def _claim_next_pending_job_sync() -> dict[str, Any] | None:
     finally:
         conn.close()
 
+# ФУНКЦИЯ ДЛЯ УСТАНОВКИ СТАТУСА DONE
+def _mark_job_done_sync(job_id: int) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE jobs SET status = 'done' WHERE id = ?", (job_id,))
+        conn.commit()
+    except Exception as e:
+        print(f"❌ Ошибка при установке статуса done: {e}")
+    finally:
+        conn.close()
+
 async def claim_next_pending_job() -> dict[str, Any] | None:
     return await asyncio.to_thread(_claim_next_pending_job_sync)
+
+# АСИНХРОННАЯ ОБЕРТКА ДЛЯ DONE
+async def mark_job_done(job_id: int) -> None:
+    return await asyncio.to_thread(_mark_job_done_sync, job_id)
 
 async def worker_loop() -> None:
     _ensure_worker_console_logging()
@@ -104,7 +123,11 @@ async def worker_loop() -> None:
                     run_pipeline(job_id, target_url),
                     timeout=JOB_TIMEOUT_SECONDS,
                 )
-                print(f"✅ Задача {job_id} успешно завершена!", flush=True)
+
+                # ФИКСИРУЕМ УСПЕШНОЕ ЗАВЕРШЕНИЕ В БД
+                await mark_job_done(job_id)
+                print(f"✅ Задача {job_id} успешно завершена и переведена в статус 'done'!", flush=True)
+
             except asyncio.TimeoutError:
                 error_message = f"Pipeline timeout after {JOB_TIMEOUT_SECONDS}s"
                 await log_job_message(job_id, "error", error_message)
