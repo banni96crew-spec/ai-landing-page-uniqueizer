@@ -37,6 +37,13 @@ class JobDetailResponse(BaseModel):
     progress_pct: int
 
 
+class JobLogResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    level: str
+    message: str
+    timestamp: datetime
+
+
 class SettingResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     key: str

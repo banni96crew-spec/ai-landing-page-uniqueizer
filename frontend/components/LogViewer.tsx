@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { getRequiredPublicEnv } from "./env";
-import type { JobDetailResponse, JobStatus } from "./types";
+import type { JobDetailResponse, JobLogResponse, JobStatus } from "./types";
 
 type LogItem = {
   message: string;
@@ -32,6 +32,10 @@ export function LogViewer({ jobId }: { jobId: number }) {
   const [terminalStatus, setTerminalStatus] = useState<JobStatus | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const retryRef = useRef<number>(0);
+  const terminalStatusRef = useRef<JobStatus | null>(null);
+  const logsCountRef = useRef<number>(0);
+  const logKeysRef = useRef<Set<string>>(new Set());
+  const retryTimeoutRef = useRef<number | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -39,17 +43,73 @@ export function LogViewer({ jobId }: { jobId: number }) {
     el.scrollTop = el.scrollHeight;
   }, [logs.length]);
 
+  function ingestLog(item: { message: string; timestamp: string; level: string }): void {
+    const key = `${item.timestamp}|${item.level}|${item.message}`;
+    if (logKeysRef.current.has(key)) return;
+    logKeysRef.current.add(key);
+    setLogs((prev) => [
+      ...prev,
+      { message: item.message, timestamp: item.timestamp, level: item.level },
+    ]);
+  }
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadHistory() {
+      try {
+        const res = await fetch(`${apiUrl}/api/jobs/${jobId}/logs?limit=500&offset=0`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const history = (await res.json()) as JobLogResponse[];
+        if (!alive) return;
+        for (const row of history) {
+          ingestLog({
+            message: row.message,
+            timestamp: row.timestamp,
+            level: row.level,
+          });
+        }
+      } catch {
+        // ignore history fetch errors
+      }
+    }
+
+    loadHistory();
+    return () => {
+      alive = false;
+    };
+  }, [apiUrl, jobId]);
+
+  useEffect(() => {
+    terminalStatusRef.current = terminalStatus;
+  }, [terminalStatus]);
+
+  useEffect(() => {
+    logsCountRef.current = logs.length;
+  }, [logs.length]);
+
   useEffect(() => {
     setWsStatus("connecting");
     setLogs([]);
     setTerminalStatus(null);
     retryRef.current = 0;
+    terminalStatusRef.current = null;
+    logsCountRef.current = 0;
+    logKeysRef.current = new Set();
+    if (retryTimeoutRef.current !== null) {
+      window.clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
 
     let ws: WebSocket | null = null;
     let alive = true;
 
     function connect() {
       if (!alive) return;
+      if (terminalStatusRef.current) return;
 
       setWsStatus("connecting");
       ws = new WebSocket(`${wsUrl}/ws/logs/${jobId}`);
@@ -71,13 +131,16 @@ export function LogViewer({ jobId }: { jobId: number }) {
       ws.onclose = () => {
         setWsStatus("closed");
         if (!alive) return;
-        if (terminalStatus) return;
+        if (terminalStatusRef.current) return;
 
         // If the job finishes extremely fast, the WS may close before we got
         // the DB history burst. Retry a couple times to reduce missed logs.
-        if (retryRef.current < 2 && logs.length <= 1) {
+        if (retryRef.current < 2 && logsCountRef.current <= 1) {
           retryRef.current += 1;
-          window.setTimeout(connect, 250);
+          retryTimeoutRef.current = window.setTimeout(() => {
+            retryTimeoutRef.current = null;
+            connect();
+          }, 250);
         }
       };
 
@@ -100,14 +163,11 @@ export function LogViewer({ jobId }: { jobId: number }) {
         }
 
         if (parsed.type === "log") {
-          setLogs((prev) => [
-            ...prev,
-            {
-              message: parsed.message,
-              timestamp: parsed.timestamp,
-              level: parsed.level,
-            },
-          ]);
+          ingestLog({
+            message: parsed.message,
+            timestamp: parsed.timestamp,
+            level: parsed.level,
+          });
         }
       };
     }
@@ -116,6 +176,10 @@ export function LogViewer({ jobId }: { jobId: number }) {
 
     return () => {
       alive = false;
+      if (retryTimeoutRef.current !== null) {
+        window.clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
       try {
         ws?.close();
       } catch {

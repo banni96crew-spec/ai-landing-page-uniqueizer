@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from backend.config import BLOCKED_IP_PREFIXES, MAX_QUEUE_SIZE, get_artifact_path, get_job_dir
 from backend.database import get_connection
 from backend.job_progress import calculate_progress_pct
-from backend.schemas import ArtifactResponse, JobCreateRequest, JobDetailResponse, JobResponse
+from backend.schemas import ArtifactResponse, JobCreateRequest, JobDetailResponse, JobLogResponse, JobResponse
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -121,6 +121,34 @@ async def get_job(job_id: int) -> JobDetailResponse:
 
     payload = await asyncio.to_thread(_load_sync)
     return JobDetailResponse.model_validate(payload)
+
+
+@router.get("/{job_id}/logs", response_model=list[JobLogResponse])
+async def list_job_logs(
+    job_id: int,
+    limit: int = Query(default=500, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[JobLogResponse]:
+    def _load_sync() -> list[dict]:
+        conn = get_connection()
+        try:
+            _get_job_or_404(conn, job_id)
+            rows = conn.execute(
+                """
+                SELECT level, message, timestamp
+                FROM logs
+                WHERE job_id = ?
+                ORDER BY timestamp ASC, id ASC
+                LIMIT ? OFFSET ?
+                """,
+                (job_id, limit, offset),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    payload = await asyncio.to_thread(_load_sync)
+    return [JobLogResponse.model_validate(item) for item in payload]
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

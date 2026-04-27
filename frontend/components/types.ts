@@ -1,5 +1,11 @@
 export type JobStatus = "pending" | "running" | "done" | "failed";
 
+export interface JobLogResponse {
+  level: "info" | "warn" | "error" | string;
+  message: string;
+  timestamp: string;
+}
+
 export interface ArtifactResponse {
   id: number;
   job_id: number;
