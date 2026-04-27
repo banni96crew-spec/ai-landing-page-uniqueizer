@@ -8,6 +8,7 @@ import shutil
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware # <--- Добавь этот импорт
 from fastapi.middleware.cors import CORSMiddleware
 
 # Используем твои готовые конфиги и БД
@@ -128,6 +129,16 @@ async def lifespan(app: FastAPI):
             pass
 
 app = FastAPI(title="AI Landing Page Uniqueizer", lifespan=lifespan)
+
+# --- ДОБАВЬ ЭТОТ БЛОК ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], # Разрешаем наш фронтенд
+    allow_credentials=True,
+    allow_methods=["*"], # Разрешаем любые запросы (GET, POST, OPTIONS и т.д.)
+    allow_headers=["*"],
+)
+# -----------------------
 
 # Настройка CORS
 app.add_middleware(

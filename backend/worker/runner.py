@@ -1,5 +1,9 @@
+import sys
 import asyncio
 import logging
+# --- ИНЪЕКЦИЯ ДЛЯ WINDOWS И PLAYWRIGHT ---
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 from typing import Any
 
 from backend.config import JOB_TIMEOUT_SECONDS, WORKER_POLL_INTERVAL

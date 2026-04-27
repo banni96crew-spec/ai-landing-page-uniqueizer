@@ -31,6 +31,7 @@ export function LogViewer({ jobId }: { jobId: number }) {
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [terminalStatus, setTerminalStatus] = useState<JobStatus | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const retryRef = useRef<number>(0);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -42,45 +43,81 @@ export function LogViewer({ jobId }: { jobId: number }) {
     setWsStatus("connecting");
     setLogs([]);
     setTerminalStatus(null);
+    retryRef.current = 0;
 
-    const ws = new WebSocket(`${wsUrl}/ws/logs/${jobId}`);
-    ws.onopen = () => setWsStatus("connected");
-    ws.onclose = () => setWsStatus("closed");
-    ws.onerror = () => setWsStatus("closed");
+    let ws: WebSocket | null = null;
+    let alive = true;
 
-    ws.onmessage = (event: MessageEvent<string>) => {
-      let parsed: WsEvent;
-      try {
-        parsed = JSON.parse(event.data) as WsEvent;
-      } catch {
-        return;
-      }
+    function connect() {
+      if (!alive) return;
 
-      if (parsed.type === "done") {
-        setTerminalStatus(parsed.status);
+      setWsStatus("connecting");
+      ws = new WebSocket(`${wsUrl}/ws/logs/${jobId}`);
+
+      ws.onopen = () => {
+        retryRef.current = 0;
+        setWsStatus("connected");
+      };
+
+      ws.onerror = () => {
+        setWsStatus("closed");
         try {
-          ws.close();
+          ws?.close();
         } catch {
           // ignore
         }
-        return;
-      }
+      };
 
-      if (parsed.type === "log") {
-        setLogs((prev) => [
-          ...prev,
-          {
-            message: parsed.message,
-            timestamp: parsed.timestamp,
-            level: parsed.level,
-          },
-        ]);
-      }
-    };
+      ws.onclose = () => {
+        setWsStatus("closed");
+        if (!alive) return;
+        if (terminalStatus) return;
+
+        // If the job finishes extremely fast, the WS may close before we got
+        // the DB history burst. Retry a couple times to reduce missed logs.
+        if (retryRef.current < 2 && logs.length <= 1) {
+          retryRef.current += 1;
+          window.setTimeout(connect, 250);
+        }
+      };
+
+      ws.onmessage = (event: MessageEvent<string>) => {
+        let parsed: WsEvent;
+        try {
+          parsed = JSON.parse(event.data) as WsEvent;
+        } catch {
+          return;
+        }
+
+        if (parsed.type === "done") {
+          setTerminalStatus(parsed.status);
+          try {
+            ws?.close();
+          } catch {
+            // ignore
+          }
+          return;
+        }
+
+        if (parsed.type === "log") {
+          setLogs((prev) => [
+            ...prev,
+            {
+              message: parsed.message,
+              timestamp: parsed.timestamp,
+              level: parsed.level,
+            },
+          ]);
+        }
+      };
+    }
+
+    connect();
 
     return () => {
+      alive = false;
       try {
-        ws.close();
+        ws?.close();
       } catch {
         // ignore
       }

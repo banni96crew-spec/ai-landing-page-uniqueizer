@@ -26,7 +26,19 @@ export function JobInputPanel() {
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
-    const apiUrl = getRequiredPublicEnv("NEXT_PUBLIC_API_URL");
+    let apiUrl = "";
+    try {
+      apiUrl = getRequiredPublicEnv("NEXT_PUBLIC_API_URL");
+    } catch {
+      setError("API URL is not configured");
+      return;
+    }
+
+    if (!apiUrl) {
+      setError("API URL is not configured");
+      return;
+    }
+
     setIsLoading(true);
     try {
       const res = await fetch(`${apiUrl}/api/jobs`, {
@@ -39,7 +51,12 @@ export function JobInputPanel() {
         let message = `Error ${res.status}`;
         try {
           const body = (await res.json()) as CreateJobErrorBody;
-          message = body.detail ?? body.error ?? message;
+          const raw = body.detail ?? body.error ?? message;
+          if (raw === "queue_full") {
+            message = "Queue is full, please try again later";
+          } else {
+            message = raw;
+          }
         } catch {
           // ignore JSON parse errors
         }
