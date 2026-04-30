@@ -10,6 +10,7 @@ from backend.worker.module_packer import module_packer
 from backend.worker.module_scraper import module_scraper
 
 PipelineStep = tuple[str, Callable[..., Awaitable[None]], tuple[object, ...]]
+PROXY_URL_SETTING_KEY = "proxy_url"
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +67,29 @@ async def mark_job_failed(job_id: int, error_message: str) -> None:
     await asyncio.to_thread(_mark_failed_sync, job_id, error_message)
 
 
+def _get_setting_value_sync(key: str) -> str | None:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?",
+            (key,),
+        ).fetchone()
+        if row is None:
+            return None
+        value = str(row["value"]).strip()
+        return value or None
+    finally:
+        conn.close()
+
+
+async def get_setting_value(key: str) -> str | None:
+    return await asyncio.to_thread(_get_setting_value_sync, key)
+
+
 async def run_pipeline(job_id: int, target_url: str) -> None:
+    proxy_url = await get_setting_value(PROXY_URL_SETTING_KEY)
     steps: tuple[PipelineStep, ...] = (
-        ("MODULE_SCRAPER_DONE", module_scraper, (job_id, target_url)),
+        ("MODULE_SCRAPER_DONE", module_scraper, (job_id, target_url, proxy_url)),
         ("MODULE_DOM_MUTATOR_DONE", module_dom_mutator, (job_id,)),
         ("MODULE_AI_REWRITER_DONE", module_ai_rewriter, (job_id,)),
         ("MODULE_MEDIA_UNIQUEIZER_DONE", module_media_uniqueizer, (job_id,)),

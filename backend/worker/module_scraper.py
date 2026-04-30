@@ -1,6 +1,9 @@
 import asyncio
 import logging
+import random
 from pathlib import Path
+from typing import TypedDict
+from urllib.parse import unquote, urlsplit
 
 try:
     import httpx
@@ -22,6 +25,13 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for test environments
     class PlaywrightTimeoutError(PlaywrightError):
         """Fallback Playwright timeout error when dependency is unavailable."""
 
+try:
+    from playwright_stealth import stealth_async
+except ModuleNotFoundError:  # pragma: no cover - fallback for test environments
+    async def stealth_async(page: object) -> None:
+        del page
+        return None
+
 from backend.config import ASSET_DOWNLOAD_TIMEOUT_SECONDS, SCRAPER_PAGE_TIMEOUT_SECONDS, get_job_dir
 from backend.database import get_connection, log_message
 from backend.worker.asset_rewriter import AssetRewriteResult, rewrite_asset_urls
@@ -32,10 +42,54 @@ from backend.worker.google_fonts import download_google_fonts
 logger = logging.getLogger(__name__)
 
 ANTI_BOT_TOKENS = ("captcha", "verify", "challenge")
+CHALLENGE_PAGE_TOKENS = (
+    "attention required",
+    "cf-challenge",
+    "challenge-platform",
+    "checking your browser",
+    "cloudflare",
+    "datadome",
+    "enable javascript",
+    "just a moment",
+    "verify you are human",
+)
 NETWORKIDLE_TIMEOUT_MS = 45_000
 LAZY_LOAD_WAIT_MS = 2_000
+CHALLENGE_SETTLE_POLL_MS = 1_500
+CHALLENGE_SETTLE_ATTEMPTS = 3
+HUMAN_DELAY_RANGE_MS = (2_000, 5_000)
 MIN_HTML_LENGTH = 1_000
 LOCAL_TARGET_PREFIX = "local:"
+RANDOM_SOURCE = random.SystemRandom()
+REALISTIC_USER_AGENTS = (
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+    ),
+    (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/134.0.6998.118 Safari/537.36"
+    ),
+)
+REALISTIC_VIEWPORTS = (
+    {"width": 1366, "height": 768},
+    {"width": 1440, "height": 900},
+    {"width": 1536, "height": 864},
+    {"width": 1600, "height": 900},
+    {"width": 1728, "height": 1117},
+    {"width": 1920, "height": 1080},
+)
+
+
+class ProxySettings(TypedDict, total=False):
+    server: str
+    username: str
+    password: str
+    bypass: str
 
 
 class ScraperError(RuntimeError):
@@ -78,6 +132,68 @@ async def _log_job_message(job_id: int, level: str, message: str) -> None:
     await asyncio.to_thread(_log_job_message_sync, job_id, level, message)
 
 
+def _choose_user_agent() -> str:
+    return RANDOM_SOURCE.choice(REALISTIC_USER_AGENTS)
+
+
+def _choose_viewport() -> dict[str, int]:
+    viewport = RANDOM_SOURCE.choice(REALISTIC_VIEWPORTS)
+    return {"width": viewport["width"], "height": viewport["height"]}
+
+
+def _choose_human_delay_ms() -> int:
+    return RANDOM_SOURCE.randint(*HUMAN_DELAY_RANGE_MS)
+
+
+def _build_context_options() -> dict[str, object]:
+    viewport = _choose_viewport()
+    return {
+        "user_agent": _choose_user_agent(),
+        "viewport": viewport,
+        "screen": viewport.copy(),
+        "locale": "en-US",
+        "color_scheme": "dark",
+    }
+
+
+def _build_proxy_settings(proxy_url: str | None) -> ProxySettings | None:
+    if proxy_url is None:
+        return None
+    normalized_proxy_url = proxy_url.strip()
+    if not normalized_proxy_url:
+        return None
+
+    parsed = urlsplit(normalized_proxy_url)
+    if not parsed.scheme or not parsed.hostname:
+        return {"server": normalized_proxy_url}
+    try:
+        port = parsed.port
+    except ValueError:
+        return {"server": normalized_proxy_url}
+
+    proxy_settings: ProxySettings = {
+        "server": f"{parsed.scheme}://{parsed.hostname}:{port}"
+        if port is not None
+        else f"{parsed.scheme}://{parsed.hostname}",
+    }
+    if parsed.username:
+        proxy_settings["username"] = unquote(parsed.username)
+    if parsed.password:
+        proxy_settings["password"] = unquote(parsed.password)
+    return proxy_settings
+
+
+def _build_launch_options(proxy_url: str | None) -> dict[str, object]:
+    launch_options: dict[str, object] = {
+        "headless": True,
+        "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+    }
+    proxy_settings = _build_proxy_settings(proxy_url)
+    if proxy_settings is not None:
+        launch_options["proxy"] = proxy_settings
+    return launch_options
+
+
 def _is_anti_bot_redirect(target_url: str, current_url: str) -> bool:
     normalized_target = target_url.lower()
     normalized_current = current_url.lower()
@@ -104,6 +220,37 @@ async def _wait_for_network_idle(page: object, job_id: int) -> None:
         message = "networkidle timeout, using partial DOM"
         logger.warning("%s (job_id=%s)", message, job_id)
         await _log_job_message(job_id, "warn", message)
+
+
+def _has_challenge_markers(*parts: str) -> bool:
+    normalized_parts = tuple(part.lower() for part in parts if part)
+    return any(token in part for token in CHALLENGE_PAGE_TOKENS for part in normalized_parts)
+
+
+async def _wait_for_real_content(page: object, job_id: int) -> None:
+    human_delay_ms = _choose_human_delay_ms()
+    logger.info(
+        "scraper: waiting %sms for JS challenge settle (job_id=%s)",
+        human_delay_ms,
+        job_id,
+    )
+    await page.wait_for_timeout(human_delay_ms)
+
+    for attempt in range(CHALLENGE_SETTLE_ATTEMPTS):
+        current_url = str(page.url)
+        page_title = await page.title()
+        html = await page.content()
+        if not _has_challenge_markers(current_url, page_title, html):
+            return
+        if attempt == CHALLENGE_SETTLE_ATTEMPTS - 1:
+            raise ScraperError("Target URL blocked by anti-bot")
+        logger.info(
+            "scraper: challenge markers still present, retrying settle (job_id=%s attempt=%s)",
+            job_id,
+            attempt + 1,
+        )
+        await _wait_for_network_idle(page, job_id)
+        await page.wait_for_timeout(CHALLENGE_SETTLE_POLL_MS)
 
 
 async def _collect_html(page: object) -> str:
@@ -233,7 +380,12 @@ def _require_playwright() -> None:
         raise RuntimeError("playwright package is not installed")
 
 
-async def scrape(job_id: int, target_url: str) -> Path:
+async def scrape(
+    job_id: int,
+    target_url: str,
+    *,
+    proxy_url: str | None = None,
+) -> Path:
     raw_dir = get_job_dir(job_id) / "raw"
     if target_url.startswith(LOCAL_TARGET_PREFIX):
         logger.info("scraper: using local debug target (job_id=%s)", job_id)
@@ -245,18 +397,19 @@ async def scrape(job_id: int, target_url: str) -> Path:
     async with async_playwright() as playwright_api:
         logger.info("scraper: launching chromium (job_id=%s)", job_id)
         browser = await asyncio.wait_for(
-            playwright_api.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"],
-            ),
+            playwright_api.chromium.launch(**_build_launch_options(proxy_url)),
             timeout=30,
         )
         try:
             logger.info("scraper: creating browser context (job_id=%s)", job_id)
-            context = await asyncio.wait_for(browser.new_context(), timeout=15)
+            context = await asyncio.wait_for(
+                browser.new_context(**_build_context_options()),
+                timeout=15,
+            )
 
             logger.info("scraper: creating new page (job_id=%s)", job_id)
             page = await asyncio.wait_for(context.new_page(), timeout=15)
+            await stealth_async(page)
 
             logger.info("scraper: navigating to target url (job_id=%s)", job_id)
             await _navigate(page, target_url)
@@ -266,6 +419,7 @@ async def scrape(job_id: int, target_url: str) -> Path:
 
             logger.info("scraper: waiting for network idle (job_id=%s)", job_id)
             await _wait_for_network_idle(page, job_id)
+            await _wait_for_real_content(page, job_id)
 
             logger.info("scraper: collecting page html (job_id=%s)", job_id)
             html = await _collect_html(page)
@@ -288,9 +442,13 @@ async def scrape(job_id: int, target_url: str) -> Path:
     return raw_dir
 
 
-async def module_scraper(job_id: int, target_url: str) -> None:
+async def module_scraper(
+    job_id: int,
+    target_url: str,
+    proxy_url: str | None = None,
+) -> None:
     logger.info("module_scraper: start (job_id=%s)", job_id)
-    raw_dir = await scrape(job_id, target_url)
+    raw_dir = await scrape(job_id, target_url, proxy_url=proxy_url)
     logger.info("module_scraper: raw_dir=%s job_id=%s", raw_dir.as_posix(), job_id)
     await clean(raw_dir, job_id, base_url=target_url)
     logger.info("module_scraper: done (job_id=%s)", job_id)

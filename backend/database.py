@@ -45,6 +45,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES
     ('ai_provider',                 'openai'),
     ('openai_model',                'gpt-4o-mini'),
     ('anthropic_model',             'claude-3-haiku-20240307'),
+    ('proxy_url',                   ''),
     ('noise_intensity',             '0.01'),
     ('js_class_exclusion_prefixes', 'js-,swiper-');
 
