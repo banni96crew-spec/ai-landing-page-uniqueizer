@@ -18,7 +18,8 @@ _VALID_PLANS = {"trial", "standard", "premium"}
 async def _verify_license_plan(activation_key: str) -> str:
     # Production validation must happen against a remote licensing service.
     # Local SQLite stores only the accepted plan state after remote verification.
-    if not config.LICENSE_SERVER_URL:
+    license_server_url = config.LICENSE_SERVER_URL
+    if license_server_url is None:
         raise HTTPException(
             status_code=503,
             detail="License server is not configured",
@@ -27,7 +28,7 @@ async def _verify_license_plan(activation_key: str) -> str:
     def _request_sync() -> str:
         body = json.dumps({"activation_key": activation_key}).encode("utf-8")
         request = urllib.request.Request(
-            url=config.LICENSE_SERVER_URL,
+            url=license_server_url,
             data=body,
             headers={
                 "Content-Type": "application/json",

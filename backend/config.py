@@ -1,6 +1,23 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ENV_FILE_PATH = PROJECT_ROOT / ".env"
+
+# Load the repository root .env once before reading any settings values.
+load_dotenv(ENV_FILE_PATH)
+
+
+def _get_optional_env(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
 
 DEFAULT_DATABASE_URL = str(Path(__file__).resolve().parent / "data" / "app.db")
 JOBS_WORKDIR = Path(os.environ.get("JOBS_WORKDIR", "/app/volumes/jobs"))
@@ -38,7 +55,7 @@ AUTH_COOKIE_SECURE = os.environ.get("AUTH_COOKIE_SECURE", "false").lower() in {
     "yes",
     "on",
 }
-LICENSE_SERVER_URL = os.environ.get("LICENSE_SERVER_URL", "").strip()
+LICENSE_SERVER_URL: str | None = _get_optional_env("LICENSE_SERVER_URL")
 
 CORS_ORIGINS: list[str] = [
     origin.strip()
