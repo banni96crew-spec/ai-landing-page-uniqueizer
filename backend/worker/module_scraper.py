@@ -45,11 +45,7 @@ ANTI_BOT_TOKENS = ("captcha", "verify", "challenge")
 CHALLENGE_PAGE_TOKENS = (
     "attention required",
     "cf-challenge",
-    "challenge-platform",
     "checking your browser",
-    "cloudflare",
-    "datadome",
-    "enable javascript",
     "just a moment",
     "verify you are human",
 )
@@ -61,6 +57,7 @@ HUMAN_DELAY_RANGE_MS = (2_000, 5_000)
 ACTION_JITTER_RANGE_MS = (250, 900)
 RETRY_BACKOFF_RANGE_MS = (1_000, 2_500)
 MAX_BLOCK_RETRIES = 3
+BROWSER_CLOSE_TIMEOUT_S = 10
 MIN_HTML_LENGTH = 1_000
 LOCAL_TARGET_PREFIX = "local:"
 RANDOM_SOURCE = random.SystemRandom()
@@ -273,9 +270,29 @@ async def _wait_for_network_idle(page: object, job_id: int) -> None:
         await _log_job_message(job_id, "warn", message)
 
 
-def _has_challenge_markers(*parts: str) -> bool:
-    normalized_parts = tuple(part.lower() for part in parts if part)
-    return any(token in part for token in CHALLENGE_PAGE_TOKENS for part in normalized_parts)
+def _find_challenge_marker(current_url: str, page_title: str, html: str) -> tuple[bool, str, str]:
+    normalized_url = current_url.lower()
+    normalized_title = page_title.lower()
+    normalized_html = html.lower()
+    candidates = (
+        ("url", normalized_url),
+        ("title", normalized_title),
+        ("html", normalized_html),
+    )
+    for source, text in candidates:
+        for token in CHALLENGE_PAGE_TOKENS:
+            if token in text:
+                return True, source, token
+
+    # Cloudflare/Datadome scripts can be present in normal pages; treat as blocked only
+    # when coupled with explicit challenge messaging in title or URL.
+    soft_tokens = ("challenge-platform", "cloudflare", "datadome", "enable javascript")
+    blocker_hints = ("challenge", "captcha", "verify", "just a moment", "checking your browser")
+    title_or_url_has_hint = any(hint in normalized_url or hint in normalized_title for hint in blocker_hints)
+    for token in soft_tokens:
+        if token in normalized_html and title_or_url_has_hint:
+            return True, "html", token
+    return False, "", ""
 
 
 async def _wait_for_real_content(page: object, job_id: int) -> None:
@@ -291,7 +308,18 @@ async def _wait_for_real_content(page: object, job_id: int) -> None:
         current_url = str(page.url)
         page_title = await page.title()
         html = await page.content()
-        if not _has_challenge_markers(current_url, page_title, html):
+        marker_detected, marker_source, marker_token = _find_challenge_marker(current_url, page_title, html)
+        logger.debug(
+            "scraper: marker check job_id=%s attempt=%s detected=%s source=%s token=%s url=%s html_len=%s",
+            job_id,
+            attempt + 1,
+            marker_detected,
+            marker_source,
+            marker_token,
+            current_url[:220],
+            len(html),
+        )
+        if not marker_detected:
             return
         if attempt == CHALLENGE_SETTLE_ATTEMPTS - 1:
             raise ScraperError("Target URL blocked by anti-bot")
@@ -320,6 +348,19 @@ def _is_retryable_block_error(error_message: str) -> bool:
         "blocked by anti-bot" in normalized
         or "too small, possible bot detection" in normalized
     )
+
+
+async def _safe_close_browser(browser: object, job_id: int, attempt: int) -> None:
+    logger.info("scraper: closing browser (job_id=%s)", job_id)
+    try:
+        await asyncio.wait_for(browser.close(), timeout=BROWSER_CLOSE_TIMEOUT_S)
+    except Exception as close_exc:
+        logger.warning(
+            "scraper: browser close failed, ignoring and continuing (job_id=%s attempt=%s error=%s)",
+            job_id,
+            attempt,
+            str(close_exc),
+        )
 
 
 def _inject_font_stylesheets_in_head_sync(html: str, hrefs: list[str]) -> str:
@@ -458,69 +499,89 @@ async def scrape(
     _require_playwright()
     html: str | None = None
 
-    async with async_playwright() as playwright_api:
-        for attempt in range(1, MAX_BLOCK_RETRIES + 1):
-            fingerprint = _build_browser_fingerprint()
-            logger.info(
-                "scraper: launching chromium (job_id=%s attempt=%s ua=%s)",
+    for attempt in range(1, MAX_BLOCK_RETRIES + 1):
+        fingerprint = _build_browser_fingerprint()
+        try:
+            async with async_playwright() as playwright_api:
+                logger.info(
+                    "scraper: launching chromium (job_id=%s attempt=%s ua=%s)",
+                    job_id,
+                    attempt,
+                    fingerprint["user_agent"],
+                )
+                browser = await asyncio.wait_for(
+                    playwright_api.chromium.launch(**_build_launch_options(proxy_url)),
+                    timeout=30,
+                )
+                try:
+                    logger.info("scraper: creating browser context (job_id=%s)", job_id)
+                    context = await asyncio.wait_for(
+                        browser.new_context(**_build_context_options(fingerprint)),
+                        timeout=15,
+                    )
+
+                    logger.info("scraper: creating new page (job_id=%s)", job_id)
+                    page = await asyncio.wait_for(context.new_page(), timeout=15)
+                    await page.set_extra_http_headers(fingerprint["headers"])
+                    try:
+                        await stealth_async(page)
+                    except Exception as stealth_exc:
+                        logger.warning(
+                            "scraper: stealth patch failed, continue without stealth (job_id=%s attempt=%s error=%s)",
+                            job_id,
+                            attempt,
+                            str(stealth_exc),
+                        )
+
+                    await _wait_action_jitter(page)
+                    logger.info("scraper: navigating to target url (job_id=%s)", job_id)
+                    await _navigate(page, target_url)
+                    await _wait_action_jitter(page)
+
+                    if _is_anti_bot_redirect(target_url, page.url):
+                        raise ScraperError("Target URL blocked by anti-bot")
+
+                    logger.info("scraper: waiting for network idle (job_id=%s)", job_id)
+                    await _wait_for_network_idle(page, job_id)
+                    await _wait_action_jitter(page)
+                    await _wait_for_real_content(page, job_id)
+                    await _wait_action_jitter(page)
+
+                    logger.info("scraper: collecting page html (job_id=%s)", job_id)
+                    html = await _collect_html(page)
+                    if len(html) < MIN_HTML_LENGTH:
+                        raise ScraperError("Scraped HTML too small, possible bot detection")
+                finally:
+                    await _safe_close_browser(browser, job_id, attempt)
+            if html is not None:
+                break
+        except ScraperError as exc:
+            error_message = str(exc)
+            if attempt < MAX_BLOCK_RETRIES and _is_retryable_block_error(error_message):
+                backoff_ms = _choose_retry_backoff_ms()
+                logger.warning(
+                    "scraper: anti-bot response detected, retrying with new fingerprint "
+                    "(job_id=%s attempt=%s/%s wait_ms=%s reason=%s)",
+                    job_id,
+                    attempt,
+                    MAX_BLOCK_RETRIES,
+                    backoff_ms,
+                    error_message,
+                )
+                await asyncio.sleep(backoff_ms / 1000)
+                continue
+            raise
+        except Exception as exc:
+            logger.exception(
+                "scraper: unexpected error during attempt (job_id=%s attempt=%s)",
                 job_id,
                 attempt,
-                fingerprint["user_agent"],
             )
-            browser = await asyncio.wait_for(
-                playwright_api.chromium.launch(**_build_launch_options(proxy_url)),
-                timeout=30,
-            )
-            try:
-                logger.info("scraper: creating browser context (job_id=%s)", job_id)
-                context = await asyncio.wait_for(
-                    browser.new_context(**_build_context_options(fingerprint)),
-                    timeout=15,
-                )
-
-                logger.info("scraper: creating new page (job_id=%s)", job_id)
-                page = await asyncio.wait_for(context.new_page(), timeout=15)
-                await page.set_extra_http_headers(fingerprint["headers"])
-                await stealth_async(page)
-
-                await _wait_action_jitter(page)
-                logger.info("scraper: navigating to target url (job_id=%s)", job_id)
-                await _navigate(page, target_url)
-                await _wait_action_jitter(page)
-
-                if _is_anti_bot_redirect(target_url, page.url):
-                    raise ScraperError("Target URL blocked by anti-bot")
-
-                logger.info("scraper: waiting for network idle (job_id=%s)", job_id)
-                await _wait_for_network_idle(page, job_id)
-                await _wait_action_jitter(page)
-                await _wait_for_real_content(page, job_id)
-                await _wait_action_jitter(page)
-
-                logger.info("scraper: collecting page html (job_id=%s)", job_id)
-                html = await _collect_html(page)
-                if len(html) < MIN_HTML_LENGTH:
-                    raise ScraperError("Scraped HTML too small, possible bot detection")
-                break
-            except ScraperError as exc:
-                error_message = str(exc)
-                if attempt < MAX_BLOCK_RETRIES and _is_retryable_block_error(error_message):
-                    backoff_ms = _choose_retry_backoff_ms()
-                    logger.warning(
-                        "scraper: anti-bot response detected, retrying with new fingerprint "
-                        "(job_id=%s attempt=%s/%s wait_ms=%s reason=%s)",
-                        job_id,
-                        attempt,
-                        MAX_BLOCK_RETRIES,
-                        backoff_ms,
-                        error_message,
-                    )
-                    await asyncio.sleep(backoff_ms / 1000)
-                    continue
-                raise
-            finally:
-                logger.info("scraper: closing browser (job_id=%s)", job_id)
-                await browser.close()
+            if attempt < MAX_BLOCK_RETRIES:
+                backoff_ms = _choose_retry_backoff_ms()
+                await asyncio.sleep(backoff_ms / 1000)
+                continue
+            raise ScraperError(f"Scraper runtime error: {type(exc).__name__}") from exc
 
     if html is None:
         raise ScraperError("Target URL blocked by anti-bot")
