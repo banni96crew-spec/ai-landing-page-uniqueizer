@@ -3,18 +3,14 @@ import Link from "next/link";
 
 import { JobDetailClient } from "../../../components/JobDetailClient";
 import type { JobDetailResponse } from "../../../components/types";
+import { fetchServerApi } from "../../../lib/server-api";
 
 type PageProps = {
   params: { id: string };
 };
 
 async function fetchJob(jobId: number): Promise<JobDetailResponse> {
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-  if (!apiUrl) {
-    throw new Error("Missing required env var: NEXT_PUBLIC_API_URL");
-  }
-
-  const res = await fetch(`${apiUrl}/api/jobs/${jobId}`, {
+  const res = await fetchServerApi(`/api/jobs/${jobId}`, {
     cache: "no-store",
   });
 

@@ -57,6 +57,40 @@ CREATE TABLE IF NOT EXISTS logs (
     timestamp  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE INDEX IF NOT EXISTS idx_logs_job_id_timestamp
+    ON logs (job_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS users (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    login             TEXT    NOT NULL UNIQUE,
+    password_hash     TEXT    NOT NULL,
+    password_salt     TEXT    NOT NULL,
+    telegram_username TEXT    NOT NULL DEFAULT '',
+    plan              TEXT    NOT NULL DEFAULT 'trial',
+    created_at        DATETIME NOT NULL DEFAULT (datetime('now')),
+    updated_at        DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_login
+    ON users (login);
+
+CREATE TRIGGER IF NOT EXISTS trg_users_updated_at
+AFTER UPDATE ON users
+BEGIN
+    UPDATE users SET updated_at = datetime('now') WHERE id = NEW.id;
+END;
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id            INTEGER NOT NULL REFERENCES users(id),
+    session_token_hash TEXT    NOT NULL UNIQUE,
+    expires_at         DATETIME NOT NULL,
+    created_at         DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id_expires_at
+    ON auth_sessions (user_id, expires_at);
+
 CREATE TRIGGER IF NOT EXISTS trg_jobs_updated_at
 AFTER UPDATE ON jobs
 BEGIN
@@ -71,8 +105,16 @@ _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_ENSURED_PATHS: set[str] = set()
 
 
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
 def _table_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
-    allowed = ("jobs", "settings", "logs", "artifacts")
+    allowed = ("jobs", "settings", "logs", "artifacts", "users", "auth_sessions")
     if table not in allowed:
         raise ValueError(f"unsupported table for PRAGMA: {table}")
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
@@ -110,7 +152,9 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
-    settings_cols = _table_column_names(conn, "settings")
+    settings_cols: set[str] = set()
+    if _table_exists(conn, "settings"):
+        settings_cols = _table_column_names(conn, "settings")
     if settings_cols and "updated_at" not in settings_cols:
         conn.execute(
             "ALTER TABLE settings ADD COLUMN updated_at TEXT DEFAULT ''"
@@ -119,6 +163,79 @@ def ensure_db_schema(conn: sqlite3.Connection) -> None:
             "UPDATE settings SET updated_at = datetime('now') "
             "WHERE TRIM(COALESCE(updated_at, '')) = ''"
         )
+
+    if settings_cols:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO settings (key, value, updated_at)
+            VALUES ('proxy_url', '', CURRENT_TIMESTAMP)
+            """
+        )
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            login             TEXT    NOT NULL UNIQUE,
+            password_hash     TEXT    NOT NULL,
+            password_salt     TEXT    NOT NULL,
+            telegram_username TEXT    NOT NULL DEFAULT '',
+            plan              TEXT    NOT NULL DEFAULT 'trial',
+            created_at        DATETIME NOT NULL DEFAULT (datetime('now')),
+            updated_at        DATETIME NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_users_login
+            ON users (login);
+
+        CREATE TRIGGER IF NOT EXISTS trg_users_updated_at
+        AFTER UPDATE ON users
+        BEGIN
+            UPDATE users SET updated_at = datetime('now') WHERE id = NEW.id;
+        END;
+
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id            INTEGER NOT NULL REFERENCES users(id),
+            session_token_hash TEXT    NOT NULL UNIQUE,
+            expires_at         DATETIME NOT NULL,
+            created_at         DATETIME NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id_expires_at
+            ON auth_sessions (user_id, expires_at);
+        """
+    )
+
+    if _table_exists(conn, "users"):
+        user_cols = _table_column_names(conn, "users")
+        if "telegram_username" not in user_cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN telegram_username TEXT NOT NULL DEFAULT ''"
+            )
+        if "plan" not in user_cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'trial'"
+            )
+        if "updated_at" not in user_cols:
+            conn.execute(
+                "ALTER TABLE users ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+            )
+            conn.execute(
+                "UPDATE users SET updated_at = datetime('now') "
+                "WHERE TRIM(COALESCE(updated_at, '')) = ''"
+            )
+
+    if _table_exists(conn, "auth_sessions"):
+        session_cols = _table_column_names(conn, "auth_sessions")
+        if "created_at" not in session_cols:
+            conn.execute(
+                "ALTER TABLE auth_sessions ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"
+            )
+            conn.execute(
+                "UPDATE auth_sessions SET created_at = datetime('now') "
+                "WHERE TRIM(COALESCE(created_at, '')) = ''"
+            )
 
 
 def get_connection():

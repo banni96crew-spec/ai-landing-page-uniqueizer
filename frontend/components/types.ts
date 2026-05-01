@@ -1,4 +1,5 @@
 export type JobStatus = "pending" | "running" | "done" | "failed";
+export type AccountPlan = "trial" | "standard" | "premium";
 
 export interface JobLogResponse {
   level: "info" | "warn" | "error" | string;
@@ -30,5 +31,36 @@ export interface JobDetailResponse {
   updated_at: string;
   artifact: ArtifactResponse | null;
   progress_pct: number;
+}
+
+export interface AccountResponse {
+  login: string;
+  telegram_username: string;
+  plan: AccountPlan;
+  sites_used: number;
+  sites_remaining: number | null;
+}
+
+export interface LoginRequest {
+  login: string;
+  password: string;
+}
+
+export interface RegisterRequest extends LoginRequest {
+  telegram_username: string;
+}
+
+export type LoginResponse = AccountResponse;
+export type RegisterResponse = AccountResponse;
+
+export interface LicenseVerifyRequest {
+  activation_key: string;
+}
+
+export type LicenseVerifyResponse = AccountResponse;
+
+export interface ApiErrorResponse {
+  detail?: string;
+  error?: string;
 }
 

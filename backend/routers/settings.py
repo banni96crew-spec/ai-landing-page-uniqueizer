@@ -4,6 +4,7 @@ from backend.database import get_connection
 from backend.schemas import SettingResponse, SettingUpsertRequest
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+HIDDEN_SETTINGS_KEYS = {"anthropic_api_key", "anthropic_model"}
 
 
 @router.get("", response_model=list[SettingResponse])
@@ -11,7 +12,8 @@ def get_settings() -> list[SettingResponse]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT key, value FROM settings ORDER BY key ASC"
+            "SELECT key, value FROM settings WHERE key NOT IN (?, ?) ORDER BY key ASC",
+            tuple(sorted(HIDDEN_SETTINGS_KEYS)),
         ).fetchall()
         masked = []
         for row in rows:
@@ -26,6 +28,12 @@ def get_settings() -> list[SettingResponse]:
 @router.put("")
 def upsert_settings(payload: list[SettingUpsertRequest]) -> dict[str, int]:
     for item in payload:
+        if item.key in HIDDEN_SETTINGS_KEYS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{item.key} is not exposed by the settings API",
+            )
+
         if item.key == "noise_intensity":
             try:
                 noise = float(item.value)

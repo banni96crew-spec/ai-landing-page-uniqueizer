@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { getRequiredPublicEnv } from "./env";
+import { fetchClientApi } from "../lib/client-api";
 
 type CreateJobOk = {
   id: number;
@@ -26,22 +26,9 @@ export function JobInputPanel() {
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
-    let apiUrl = "";
-    try {
-      apiUrl = getRequiredPublicEnv("NEXT_PUBLIC_API_URL");
-    } catch {
-      setError("API URL is not configured");
-      return;
-    }
-
-    if (!apiUrl) {
-      setError("API URL is not configured");
-      return;
-    }
-
     setIsLoading(true);
     try {
-      const res = await fetch(`${apiUrl}/api/jobs`, {
+      const res = await fetchClientApi("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target_url: url }),

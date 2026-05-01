@@ -1,14 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
-import { getRequiredPublicEnv } from "./env";
+import { fetchClientApi } from "../lib/client-api";
 
 type SettingResponse = { key: string; value: string };
 type SettingUpsertRequest = { key: string; value: string };
+const HIDDEN_SETTINGS_KEYS = new Set(["anthropic_api_key", "anthropic_model"]);
 
 export function SettingsForm() {
-  const apiUrl = useMemo(() => getRequiredPublicEnv("NEXT_PUBLIC_API_URL"), []);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [original, setOriginal] = useState<Record<string, string>>({});
   const [isSaving, setIsSaving] = useState(false);
@@ -23,7 +23,7 @@ export function SettingsForm() {
     async function load() {
       setError(null);
       try {
-        const res = await fetch(`${apiUrl}/api/settings`, { method: "GET" });
+        const res = await fetchClientApi("/api/settings", { method: "GET" });
         if (!res.ok) {
           setError(`Error ${res.status}`);
           return;
@@ -32,7 +32,12 @@ export function SettingsForm() {
         if (!alive) return;
 
         const map: Record<string, string> = {};
-        for (const item of data) map[item.key] = item.value;
+        for (const item of data) {
+          if (HIDDEN_SETTINGS_KEYS.has(item.key)) {
+            continue;
+          }
+          map[item.key] = item.value;
+        }
         setSettings(map);
         setOriginal(map);
       } catch {
@@ -44,7 +49,7 @@ export function SettingsForm() {
     return () => {
       alive = false;
     };
-  }, [apiUrl]);
+  }, []);
 
   async function onSave() {
     setIsSaving(true);
@@ -55,7 +60,7 @@ export function SettingsForm() {
         ([key, value]) => ({ key, value }),
       );
 
-      const res = await fetch(`${apiUrl}/api/settings`, {
+      const res = await fetchClientApi("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -76,7 +81,9 @@ export function SettingsForm() {
     }
   }
 
-  const keys = Object.keys(settings).sort((a, b) => a.localeCompare(b));
+  const keys = Object.keys(settings)
+    .filter((key) => !HIDDEN_SETTINGS_KEYS.has(key))
+    .sort((a, b) => a.localeCompare(b));
 
   return (
     <section className="mx-auto flex w-full max-w-xl flex-col gap-4">

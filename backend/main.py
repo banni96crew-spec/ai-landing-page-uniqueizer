@@ -8,7 +8,6 @@ import shutil
 
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware # <--- Добавь этот импорт
 from fastapi.middleware.cors import CORSMiddleware
 
 # Используем твои готовые конфиги и БД
@@ -23,8 +22,10 @@ from backend.config import (
 )
 from backend.database import get_connection, init_db
 from backend.state import set_ws_broadcast_loop
+from backend.routers.auth import router as auth_router
 from backend.routers.artifacts import router as artifacts_router
 from backend.routers.jobs import router as jobs_router
+from backend.routers.license import router as license_router
 from backend.routers.settings import router as settings_router
 from backend.worker.runner import worker_loop
 from backend.ws.log_broadcaster import router as log_broadcaster_router
@@ -130,16 +131,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Landing Page Uniqueizer", lifespan=lifespan)
 
-# --- ДОБАВЬ ЭТОТ БЛОК ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"], # Разрешаем наш фронтенд
-    allow_credentials=True,
-    allow_methods=["*"], # Разрешаем любые запросы (GET, POST, OPTIONS и т.д.)
-    allow_headers=["*"],
-)
-# -----------------------
-
 # Настройка CORS
 app.add_middleware(
     CORSMiddleware,
@@ -149,9 +140,11 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 
+app.include_router(auth_router)
 app.include_router(jobs_router)
 app.include_router(settings_router)
 app.include_router(artifacts_router)
+app.include_router(license_router)
 app.include_router(log_broadcaster_router)
 
 @app.get("/")

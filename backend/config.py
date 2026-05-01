@@ -24,9 +24,21 @@ ASSET_DOWNLOAD_TIMEOUT_SECONDS = int(
 AI_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("AI_REQUEST_TIMEOUT_SECONDS", "30"))
 AI_BATCH_SIZE = int(os.environ.get("AI_BATCH_SIZE", "20"))
 REWRITE_FAIL_THRESHOLD = float(os.environ.get("REWRITE_FAIL_THRESHOLD", "0.5"))
+LICENSE_REQUEST_TIMEOUT_SECONDS = int(
+    os.environ.get("LICENSE_REQUEST_TIMEOUT_SECONDS", "10")
+)
 
 ARTIFACT_TTL_DAYS = int(os.environ.get("ARTIFACT_TTL_DAYS", "7"))
 FAILED_JOB_TTL_DAYS = int(os.environ.get("FAILED_JOB_TTL_DAYS", "7"))
+AUTH_SESSION_TTL_DAYS = int(os.environ.get("AUTH_SESSION_TTL_DAYS", "30"))
+AUTH_SESSION_COOKIE_NAME = os.environ.get("AUTH_SESSION_COOKIE_NAME", "ai_lpu_session")
+AUTH_COOKIE_SECURE = os.environ.get("AUTH_COOKIE_SECURE", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+LICENSE_SERVER_URL = os.environ.get("LICENSE_SERVER_URL", "").strip()
 
 CORS_ORIGINS: list[str] = [
     origin.strip()

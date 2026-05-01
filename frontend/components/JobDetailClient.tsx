@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { DownloadButton } from "./DownloadButton";
-import { getRequiredPublicEnv } from "./env";
+import { fetchClientApi } from "../lib/client-api";
 import { LogViewer } from "./LogViewer";
 import { ProgressBar } from "./ProgressBar";
 import type { JobDetailResponse } from "./types";
@@ -13,7 +13,6 @@ export function JobDetailClient({
 }: {
   initialJob: JobDetailResponse;
 }) {
-  const apiUrl = useMemo(() => getRequiredPublicEnv("NEXT_PUBLIC_API_URL"), []);
   const [job, setJob] = useState<JobDetailResponse>(initialJob);
 
   useEffect(() => {
@@ -26,7 +25,7 @@ export function JobDetailClient({
     let alive = true;
     const interval = window.setInterval(async () => {
       try {
-        const res = await fetch(`${apiUrl}/api/jobs/${job.id}`, {
+        const res = await fetchClientApi(`/api/jobs/${job.id}`, {
           method: "GET",
           cache: "no-store",
         });
@@ -43,7 +42,7 @@ export function JobDetailClient({
       alive = false;
       window.clearInterval(interval);
     };
-  }, [apiUrl, job.id, job.status]);
+  }, [job.id, job.status]);
 
   return (
     <div className="flex flex-col gap-6">

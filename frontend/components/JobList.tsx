@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import { getRequiredPublicEnv } from "./env";
+import { fetchClientApi } from "../lib/client-api";
 import { JobCard } from "./JobCard";
 import { SkeletonCard } from "./SkeletonCard";
 import type { JobResponse } from "./types";
@@ -13,11 +13,10 @@ export function JobList() {
 
   useEffect(() => {
     let isMounted = true;
-    const apiUrl = getRequiredPublicEnv("NEXT_PUBLIC_API_URL");
 
     async function load() {
       try {
-        const res = await fetch(`${apiUrl}/api/jobs?limit=20&offset=0`, {
+        const res = await fetchClientApi("/api/jobs?limit=20&offset=0", {
           method: "GET",
         });
 

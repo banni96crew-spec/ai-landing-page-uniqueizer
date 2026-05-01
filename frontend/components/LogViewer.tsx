@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { fetchClientApi } from "../lib/client-api";
 import { getRequiredPublicEnv } from "./env";
 import type { JobDetailResponse, JobLogResponse, JobStatus } from "./types";
 
@@ -24,7 +25,6 @@ function levelClass(level: string): string {
 }
 
 export function LogViewer({ jobId }: { jobId: number }) {
-  const apiUrl = useMemo(() => getRequiredPublicEnv("NEXT_PUBLIC_API_URL"), []);
   const wsUrl = useMemo(() => getRequiredPublicEnv("NEXT_PUBLIC_WS_URL"), []);
 
   const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
@@ -58,7 +58,7 @@ export function LogViewer({ jobId }: { jobId: number }) {
 
     async function loadHistory() {
       try {
-        const res = await fetch(`${apiUrl}/api/jobs/${jobId}/logs?limit=500&offset=0`, {
+        const res = await fetchClientApi(`/api/jobs/${jobId}/logs?limit=500&offset=0`, {
           method: "GET",
           cache: "no-store",
         });
@@ -81,7 +81,7 @@ export function LogViewer({ jobId }: { jobId: number }) {
     return () => {
       alive = false;
     };
-  }, [apiUrl, jobId]);
+  }, [jobId]);
 
   useEffect(() => {
     terminalStatusRef.current = terminalStatus;
@@ -195,7 +195,7 @@ export function LogViewer({ jobId }: { jobId: number }) {
     let alive = true;
     const interval = window.setInterval(async () => {
       try {
-        const res = await fetch(`${apiUrl}/api/jobs/${jobId}`, { method: "GET" });
+        const res = await fetchClientApi(`/api/jobs/${jobId}`, { method: "GET" });
         if (!res.ok) return;
         const job = (await res.json()) as JobDetailResponse;
         if (!alive) return;
@@ -211,7 +211,7 @@ export function LogViewer({ jobId }: { jobId: number }) {
       alive = false;
       window.clearInterval(interval);
     };
-  }, [apiUrl, jobId, terminalStatus, wsStatus]);
+  }, [jobId, terminalStatus, wsStatus]);
 
   return (
     <section className="rounded-card border border-border bg-bg-secondary p-5">
