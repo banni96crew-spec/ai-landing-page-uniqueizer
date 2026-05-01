@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from backend import config, database
 from backend.routers.auth import router as auth_router
+from backend.routers.jobs import router as jobs_router
 from backend.routers.license import router as license_router
 
 
@@ -20,13 +21,14 @@ class AuthLicenseRouteTests(unittest.TestCase):
         self.previous_database_url = config.DATABASE_URL
         self.previous_license_server_url = config.LICENSE_SERVER_URL
         config.DATABASE_URL = str(self.db_path)
-        config.LICENSE_SERVER_URL = ""
+        config.LICENSE_SERVER_URL = None
         database._SCHEMA_ENSURED_PATHS.discard(os.path.abspath(str(self.db_path)))
         database.init_db()
 
         app = FastAPI()
         app.include_router(auth_router)
         app.include_router(license_router)
+        app.include_router(jobs_router)
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
@@ -145,6 +147,15 @@ class AuthLicenseRouteTests(unittest.TestCase):
         response = self.client.post(
             "/api/license/verify",
             json={"activation_key": "PREMIUM-KEY"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json(), {"detail": "Authentication required"})
+
+    def test_jobs_create_requires_authenticated_session(self) -> None:
+        response = self.client.post(
+            "/api/jobs",
+            json={"target_url": "https://example.com"},
         )
 
         self.assertEqual(response.status_code, 401)

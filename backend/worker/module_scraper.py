@@ -58,21 +58,24 @@ LAZY_LOAD_WAIT_MS = 2_000
 CHALLENGE_SETTLE_POLL_MS = 1_500
 CHALLENGE_SETTLE_ATTEMPTS = 3
 HUMAN_DELAY_RANGE_MS = (2_000, 5_000)
+ACTION_JITTER_RANGE_MS = (250, 900)
+RETRY_BACKOFF_RANGE_MS = (1_000, 2_500)
+MAX_BLOCK_RETRIES = 3
 MIN_HTML_LENGTH = 1_000
 LOCAL_TARGET_PREFIX = "local:"
 RANDOM_SOURCE = random.SystemRandom()
 REALISTIC_USER_AGENTS = (
     (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
     ),
     (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
     ),
     (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/134.0.6998.118 Safari/537.36"
+        "(KHTML, like Gecko) Chrome/134.0.6998.166 Safari/537.36"
     ),
 )
 REALISTIC_VIEWPORTS = (
@@ -90,6 +93,12 @@ class ProxySettings(TypedDict, total=False):
     username: str
     password: str
     bypass: str
+
+
+class BrowserFingerprint(TypedDict):
+    user_agent: str
+    viewport: dict[str, int]
+    headers: dict[str, str]
 
 
 class ScraperError(RuntimeError):
@@ -145,14 +154,56 @@ def _choose_human_delay_ms() -> int:
     return RANDOM_SOURCE.randint(*HUMAN_DELAY_RANGE_MS)
 
 
-def _build_context_options() -> dict[str, object]:
-    viewport = _choose_viewport()
+def _choose_action_jitter_ms() -> int:
+    return RANDOM_SOURCE.randint(*ACTION_JITTER_RANGE_MS)
+
+
+def _choose_retry_backoff_ms() -> int:
+    return RANDOM_SOURCE.randint(*RETRY_BACKOFF_RANGE_MS)
+
+
+def _extract_chrome_major(user_agent: str) -> str:
+    marker = "Chrome/"
+    marker_index = user_agent.find(marker)
+    if marker_index < 0:
+        return "135"
+    version_start = marker_index + len(marker)
+    version_end = user_agent.find(".", version_start)
+    if version_end < 0:
+        return "135"
+    major = user_agent[version_start:version_end].strip()
+    return major if major.isdigit() else "135"
+
+
+def _build_extra_headers(user_agent: str) -> dict[str, str]:
+    chrome_major = _extract_chrome_major(user_agent)
     return {
-        "user_agent": _choose_user_agent(),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Ch-Ua": f'"Chromium";v="{chrome_major}", "Google Chrome";v="{chrome_major}", "Not.A/Brand";v="24"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+
+def _build_browser_fingerprint() -> BrowserFingerprint:
+    user_agent = _choose_user_agent()
+    return {
+        "user_agent": user_agent,
+        "viewport": _choose_viewport(),
+        "headers": _build_extra_headers(user_agent),
+    }
+
+
+def _build_context_options(fingerprint: BrowserFingerprint) -> dict[str, object]:
+    viewport = fingerprint["viewport"]
+    return {
+        "user_agent": fingerprint["user_agent"],
         "viewport": viewport,
         "screen": viewport.copy(),
         "locale": "en-US",
         "color_scheme": "dark",
+        "extra_http_headers": fingerprint["headers"],
     }
 
 
@@ -210,7 +261,7 @@ async def _navigate(page: object, target_url: str) -> None:
             timeout=SCRAPER_PAGE_TIMEOUT_SECONDS * 1000,
         )
     except (PlaywrightTimeoutError, PlaywrightError) as exc:
-        raise ScraperError("Target URL unreachable or timeout") from exc
+        raise ScraperError("Timeout: target URL unreachable") from exc
 
 
 async def _wait_for_network_idle(page: object, job_id: int) -> None:
@@ -257,6 +308,18 @@ async def _collect_html(page: object) -> str:
     await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
     await page.wait_for_timeout(LAZY_LOAD_WAIT_MS)
     return await page.content()
+
+
+async def _wait_action_jitter(page: object) -> None:
+    await page.wait_for_timeout(_choose_action_jitter_ms())
+
+
+def _is_retryable_block_error(error_message: str) -> bool:
+    normalized = error_message.lower()
+    return (
+        "blocked by anti-bot" in normalized
+        or "too small, possible bot detection" in normalized
+    )
 
 
 def _inject_font_stylesheets_in_head_sync(html: str, hrefs: list[str]) -> str:
@@ -393,42 +456,74 @@ async def scrape(
         return raw_dir
 
     _require_playwright()
+    html: str | None = None
 
     async with async_playwright() as playwright_api:
-        logger.info("scraper: launching chromium (job_id=%s)", job_id)
-        browser = await asyncio.wait_for(
-            playwright_api.chromium.launch(**_build_launch_options(proxy_url)),
-            timeout=30,
-        )
-        try:
-            logger.info("scraper: creating browser context (job_id=%s)", job_id)
-            context = await asyncio.wait_for(
-                browser.new_context(**_build_context_options()),
-                timeout=15,
+        for attempt in range(1, MAX_BLOCK_RETRIES + 1):
+            fingerprint = _build_browser_fingerprint()
+            logger.info(
+                "scraper: launching chromium (job_id=%s attempt=%s ua=%s)",
+                job_id,
+                attempt,
+                fingerprint["user_agent"],
             )
+            browser = await asyncio.wait_for(
+                playwright_api.chromium.launch(**_build_launch_options(proxy_url)),
+                timeout=30,
+            )
+            try:
+                logger.info("scraper: creating browser context (job_id=%s)", job_id)
+                context = await asyncio.wait_for(
+                    browser.new_context(**_build_context_options(fingerprint)),
+                    timeout=15,
+                )
 
-            logger.info("scraper: creating new page (job_id=%s)", job_id)
-            page = await asyncio.wait_for(context.new_page(), timeout=15)
-            await stealth_async(page)
+                logger.info("scraper: creating new page (job_id=%s)", job_id)
+                page = await asyncio.wait_for(context.new_page(), timeout=15)
+                await page.set_extra_http_headers(fingerprint["headers"])
+                await stealth_async(page)
 
-            logger.info("scraper: navigating to target url (job_id=%s)", job_id)
-            await _navigate(page, target_url)
+                await _wait_action_jitter(page)
+                logger.info("scraper: navigating to target url (job_id=%s)", job_id)
+                await _navigate(page, target_url)
+                await _wait_action_jitter(page)
 
-            if _is_anti_bot_redirect(target_url, page.url):
-                raise ScraperError("Target URL blocked by anti-bot")
+                if _is_anti_bot_redirect(target_url, page.url):
+                    raise ScraperError("Target URL blocked by anti-bot")
 
-            logger.info("scraper: waiting for network idle (job_id=%s)", job_id)
-            await _wait_for_network_idle(page, job_id)
-            await _wait_for_real_content(page, job_id)
+                logger.info("scraper: waiting for network idle (job_id=%s)", job_id)
+                await _wait_for_network_idle(page, job_id)
+                await _wait_action_jitter(page)
+                await _wait_for_real_content(page, job_id)
+                await _wait_action_jitter(page)
 
-            logger.info("scraper: collecting page html (job_id=%s)", job_id)
-            html = await _collect_html(page)
-        finally:
-            logger.info("scraper: closing browser (job_id=%s)", job_id)
-            await browser.close()
+                logger.info("scraper: collecting page html (job_id=%s)", job_id)
+                html = await _collect_html(page)
+                if len(html) < MIN_HTML_LENGTH:
+                    raise ScraperError("Scraped HTML too small, possible bot detection")
+                break
+            except ScraperError as exc:
+                error_message = str(exc)
+                if attempt < MAX_BLOCK_RETRIES and _is_retryable_block_error(error_message):
+                    backoff_ms = _choose_retry_backoff_ms()
+                    logger.warning(
+                        "scraper: anti-bot response detected, retrying with new fingerprint "
+                        "(job_id=%s attempt=%s/%s wait_ms=%s reason=%s)",
+                        job_id,
+                        attempt,
+                        MAX_BLOCK_RETRIES,
+                        backoff_ms,
+                        error_message,
+                    )
+                    await asyncio.sleep(backoff_ms / 1000)
+                    continue
+                raise
+            finally:
+                logger.info("scraper: closing browser (job_id=%s)", job_id)
+                await browser.close()
 
-    if len(html) < MIN_HTML_LENGTH:
-        raise ScraperError("Scraped HTML too small, possible bot detection")
+    if html is None:
+        raise ScraperError("Target URL blocked by anti-bot")
 
     logger.info("scraper: rewriting asset urls (job_id=%s)", job_id)
     rewrite_result = await _rewrite_scraped_assets(

@@ -3,13 +3,14 @@ import socket
 import shutil
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from fastapi.responses import JSONResponse
 
 from backend.config import BLOCKED_IP_PREFIXES, MAX_QUEUE_SIZE, get_artifact_path, get_job_dir
 from backend.database import get_connection
 from backend.job_progress import calculate_progress_pct
+from backend.routers.auth import get_authenticated_user
 from backend.schemas import ArtifactResponse, JobCreateRequest, JobDetailResponse, JobLogResponse, JobResponse
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -46,7 +47,10 @@ def _validate_target_url(target_url: str) -> None:
 
 
 @router.post("", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
-def create_job(payload: JobCreateRequest) -> JobResponse | JSONResponse:
+def create_job(
+    payload: JobCreateRequest,
+    _user: dict[str, object] = Depends(get_authenticated_user),
+) -> JobResponse | JSONResponse:
     _validate_target_url(payload.target_url)
 
     conn = get_connection()
@@ -80,6 +84,7 @@ def create_job(payload: JobCreateRequest) -> JobResponse | JSONResponse:
 def list_jobs(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    _user: dict[str, object] = Depends(get_authenticated_user),
 ) -> list[JobResponse]:
     conn = get_connection()
     try:
@@ -94,7 +99,10 @@ def list_jobs(
 
 
 @router.get("/{job_id}", response_model=JobDetailResponse)
-async def get_job(job_id: int) -> JobDetailResponse:
+async def get_job(
+    job_id: int,
+    _user: dict[str, object] = Depends(get_authenticated_user),
+) -> JobDetailResponse:
     def _load_sync() -> dict:
         conn = get_connection()
         try:
@@ -128,6 +136,7 @@ async def list_job_logs(
     job_id: int,
     limit: int = Query(default=500, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    _user: dict[str, object] = Depends(get_authenticated_user),
 ) -> list[JobLogResponse]:
     def _load_sync() -> list[dict]:
         conn = get_connection()
@@ -152,7 +161,10 @@ async def list_job_logs(
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_job(job_id: int) -> Response:
+def delete_job(
+    job_id: int,
+    _user: dict[str, object] = Depends(get_authenticated_user),
+) -> Response:
     conn = get_connection()
     try:
         job = _get_job_or_404(conn, job_id)

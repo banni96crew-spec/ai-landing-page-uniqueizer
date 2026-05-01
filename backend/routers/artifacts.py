@@ -1,17 +1,21 @@
 import asyncio
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 
 from backend.config import ARTIFACTS_DIR
 from backend.database import get_connection
+from backend.routers.auth import get_authenticated_user
 
 router = APIRouter(prefix="/api/artifacts", tags=["artifacts"])
 
 
 @router.get("/{job_id}/download", response_model=None)
-async def download_artifact(job_id: int) -> FileResponse | JSONResponse:
+async def download_artifact(
+    job_id: int,
+    _user: dict[str, object] = Depends(get_authenticated_user),
+) -> FileResponse | JSONResponse:
     def _resolve_artifact_path_sync(file_path_raw: str) -> Path:
         candidate = Path(file_path_raw)
         artifacts_root = ARTIFACTS_DIR.resolve()

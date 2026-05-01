@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from backend.database import get_connection
+from backend.routers.auth import get_authenticated_user
 from backend.schemas import SettingResponse, SettingUpsertRequest
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -8,7 +9,9 @@ HIDDEN_SETTINGS_KEYS = {"anthropic_api_key", "anthropic_model"}
 
 
 @router.get("", response_model=list[SettingResponse])
-def get_settings() -> list[SettingResponse]:
+def get_settings(
+    _user: dict[str, object] = Depends(get_authenticated_user),
+) -> list[SettingResponse]:
     conn = get_connection()
     try:
         rows = conn.execute(
@@ -26,7 +29,10 @@ def get_settings() -> list[SettingResponse]:
 
 
 @router.put("")
-def upsert_settings(payload: list[SettingUpsertRequest]) -> dict[str, int]:
+def upsert_settings(
+    payload: list[SettingUpsertRequest],
+    _user: dict[str, object] = Depends(get_authenticated_user),
+) -> dict[str, int]:
     for item in payload:
         if item.key in HIDDEN_SETTINGS_KEYS:
             raise HTTPException(

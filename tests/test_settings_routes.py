@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend import config, database
+from backend.routers.auth import router as auth_router
 from backend.routers.settings import router as settings_router
 
 
@@ -20,8 +21,15 @@ class SettingsRouteTests(unittest.TestCase):
         database.init_db()
 
         app = FastAPI()
+        app.include_router(auth_router)
         app.include_router(settings_router)
         self.client = TestClient(app)
+
+        register_response = self.client.post(
+            "/api/auth/register",
+            json={"login": "owner", "password": "supersecret", "telegram_username": ""},
+        )
+        self.assertEqual(register_response.status_code, 201)
 
     def tearDown(self) -> None:
         self.client.close()
@@ -52,6 +60,20 @@ class SettingsRouteTests(unittest.TestCase):
             return str(row["value"])
         finally:
             conn.close()
+
+    def test_settings_routes_require_authentication(self) -> None:
+        anonymous_client = TestClient(self.client.app)
+        try:
+            get_response = anonymous_client.get("/api/settings")
+            put_response = anonymous_client.put(
+                "/api/settings",
+                json=[{"key": "proxy_url", "value": "http://127.0.0.1:8080"}],
+            )
+        finally:
+            anonymous_client.close()
+
+        self.assertEqual(get_response.status_code, 401)
+        self.assertEqual(put_response.status_code, 401)
 
     def test_get_settings_masks_api_keys_and_hides_anthropic_fields(self) -> None:
         self._set_setting("openai_api_key", "real-openai-key")
