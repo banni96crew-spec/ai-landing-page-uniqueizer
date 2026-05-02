@@ -2,11 +2,18 @@
 
 import { useMemo } from "react";
 
-import { getRequiredPublicEnv } from "./env";
+function stripTrailingSlash(url: string): string {
+  return url.replace(/\/$/, "");
+}
 
 export function DownloadButton({ jobId }: { jobId: number }) {
-  const apiUrl = useMemo(() => getRequiredPublicEnv("NEXT_PUBLIC_API_URL"), []);
-  const href = `${apiUrl}/api/artifacts/${jobId}/download`;
+  const href = useMemo(() => {
+    const explicit = process.env.NEXT_PUBLIC_API_URL?.trim();
+    if (explicit) {
+      return `${stripTrailingSlash(explicit)}/api/artifacts/${jobId}/download`;
+    }
+    return `/api/artifacts/${jobId}/download`;
+  }, [jobId]);
 
   return (
     <a

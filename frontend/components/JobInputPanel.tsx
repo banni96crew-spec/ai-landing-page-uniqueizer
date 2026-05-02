@@ -4,17 +4,13 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { fetchClientApi } from "../lib/client-api";
+import { formatApiErrorPayload } from "../lib/format-api-error";
 
 type CreateJobOk = {
   id: number;
   status: "pending" | "running" | "done" | "failed";
   created_at: string;
   target_url: string;
-};
-
-type CreateJobErrorBody = {
-  detail?: string;
-  error?: string;
 };
 
 export function JobInputPanel() {
@@ -37,12 +33,10 @@ export function JobInputPanel() {
       if (!res.ok) {
         let message = `Error ${res.status}`;
         try {
-          const body = (await res.json()) as CreateJobErrorBody;
-          const raw = body.detail ?? body.error ?? message;
-          if (raw === "queue_full") {
+          const parsed: unknown = await res.json();
+          message = formatApiErrorPayload(parsed, message);
+          if (message === "queue_full") {
             message = "Queue is full, please try again later";
-          } else {
-            message = raw;
           }
         } catch {
           // ignore JSON parse errors

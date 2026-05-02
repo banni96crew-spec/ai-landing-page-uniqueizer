@@ -1,15 +1,11 @@
 import type { ReactNode } from "react";
 
-import { requireAuthenticatedSession } from "../../lib/server-api";
+import { DashboardAuthGate } from "../../components/DashboardAuthGate";
 
-type DashboardLayoutProps = {
-  children: ReactNode;
-};
-
-export default async function DashboardLayout({
+export default function DashboardLayout({
   children,
-}: DashboardLayoutProps) {
-  await requireAuthenticatedSession();
-
-  return children;
+}: {
+  children: ReactNode;
+}) {
+  return <DashboardAuthGate>{children}</DashboardAuthGate>;
 }

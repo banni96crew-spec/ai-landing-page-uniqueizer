@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 
 import {
@@ -5,10 +7,10 @@ import {
   formatQuotaSummary,
   formatSitesRemaining,
 } from "../../../components/account/account-format";
-import { requireAuthenticatedSession } from "../../../lib/server-api";
+import { useDashboardSession } from "../../../components/DashboardAuthGate";
 
-export default async function AccountPage() {
-  const account = await requireAuthenticatedSession();
+export default function AccountPage() {
+  const account = useDashboardSession();
 
   return (
     <main className="min-h-screen bg-bg-primary px-6">

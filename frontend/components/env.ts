@@ -1,21 +1,16 @@
-export function getRequiredPublicEnv(name: string): string {
-  // Явный маппинг переменных, чтобы сборщик Next.js мог их корректно подставить
-  const envMap: Record<string, string | undefined> = {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
-    NEXT_PUBLIC_WS_URL: process.env.NEXT_PUBLIC_WS_URL,
-  };
+function stripTrailingSlash(url: string): string {
+  return url.replace(/\/$/, "");
+}
 
-  const val = envMap[name];
-
-  if (!val) {
-    // Жесткий фоллбэк для локальной разработки, чтобы UI не падал
-    if (name === "NEXT_PUBLIC_API_URL") return "http://127.0.0.1:8000";
-    if (name === "NEXT_PUBLIC_WS_URL") return "ws://127.0.0.1:8000";
-
-    if (typeof window !== "undefined") {
-      throw new Error(`Missing required env var: ${name}`);
-    }
+/** WebSocket base (no path). Prefer NEXT_PUBLIC_WS_URL; else same hostname as UI :8000. */
+export function getResolvedWsBaseUrl(): string {
+  const explicit = process.env.NEXT_PUBLIC_WS_URL?.trim();
+  if (explicit) {
+    return stripTrailingSlash(explicit);
   }
-
-  return val || "";
+  if (typeof window !== "undefined") {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.hostname}:8000`;
+  }
+  return "ws://127.0.0.1:8000";
 }

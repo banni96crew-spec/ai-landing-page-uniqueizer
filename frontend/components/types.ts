@@ -59,8 +59,16 @@ export interface LicenseVerifyRequest {
 
 export type LicenseVerifyResponse = AccountResponse;
 
+/** Matches typical FastAPI bodies: string detail or Pydantic 422 list. */
 export interface ApiErrorResponse {
-  detail?: string;
+  detail?: string | ApiValidationErrorItem[] | ApiValidationErrorItem;
   error?: string;
+}
+
+export interface ApiValidationErrorItem {
+  type?: string;
+  loc?: (string | number)[];
+  msg?: string;
+  input?: unknown;
 }
 

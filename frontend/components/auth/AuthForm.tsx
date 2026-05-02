@@ -5,8 +5,8 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { fetchClientApi } from "../../lib/client-api";
+import { formatApiErrorPayload } from "../../lib/format-api-error";
 import type {
-  ApiErrorResponse,
   LoginRequest,
   LoginResponse,
   RegisterRequest,
@@ -18,10 +18,6 @@ type AuthMode = "login" | "register";
 type AuthFormProps = {
   mode: AuthMode;
 };
-
-function getErrorMessage(fallback: string, payload: ApiErrorResponse): string {
-  return payload.detail ?? payload.error ?? fallback;
-}
 
 export function AuthForm({ mode }: AuthFormProps) {
   const router = useRouter();
@@ -60,10 +56,7 @@ export function AuthForm({ mode }: AuthFormProps) {
       if (!response.ok) {
         let message = `Error ${response.status}`;
         try {
-          message = getErrorMessage(
-            message,
-            (await response.json()) as ApiErrorResponse,
-          );
+          message = formatApiErrorPayload(await response.json(), message);
         } catch {
           // Ignore malformed error payloads and fall back to the status code.
         }

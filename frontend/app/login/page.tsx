@@ -1,11 +1,10 @@
 import { AuthForm } from "../../components/auth/AuthForm";
-import { redirectAuthenticatedUser } from "../../lib/server-api";
+import { RedirectIfAuthenticated } from "../../components/RedirectIfAuthenticated";
 
-export default async function LoginPage() {
-  await redirectAuthenticatedUser();
-
+export default function LoginPage() {
   return (
     <main className="min-h-screen bg-bg-primary px-6">
+      <RedirectIfAuthenticated />
       <div className="mx-auto flex w-full max-w-5xl flex-col gap-10 py-16 lg:flex-row lg:items-center lg:justify-between">
         <section className="max-w-xl">
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-accent">

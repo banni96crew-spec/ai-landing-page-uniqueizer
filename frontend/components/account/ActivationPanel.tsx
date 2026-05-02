@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { fetchClientApi } from "../../lib/client-api";
+import { formatApiErrorPayload } from "../../lib/format-api-error";
 import type {
   AccountResponse,
-  ApiErrorResponse,
   LicenseVerifyRequest,
   LicenseVerifyResponse,
 } from "../types";
@@ -19,10 +19,6 @@ import {
 type ActivationPanelProps = {
   initialAccount: AccountResponse;
 };
-
-function getErrorMessage(fallback: string, payload: ApiErrorResponse): string {
-  return payload.detail ?? payload.error ?? fallback;
-}
 
 export function ActivationPanel({ initialAccount }: ActivationPanelProps) {
   const [account, setAccount] = useState<AccountResponse>(initialAccount);
@@ -49,10 +45,7 @@ export function ActivationPanel({ initialAccount }: ActivationPanelProps) {
       if (!response.ok) {
         let message = `Error ${response.status}`;
         try {
-          message = getErrorMessage(
-            message,
-            (await response.json()) as ApiErrorResponse,
-          );
+          message = formatApiErrorPayload(await response.json(), message);
         } catch {
           // Ignore invalid error bodies and fall back to HTTP status text.
         }

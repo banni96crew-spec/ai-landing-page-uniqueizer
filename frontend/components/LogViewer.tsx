@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { fetchClientApi } from "../lib/client-api";
-import { getRequiredPublicEnv } from "./env";
+import { getResolvedWsBaseUrl } from "./env";
 import type { JobDetailResponse, JobLogResponse, JobStatus } from "./types";
 
 type LogItem = {
@@ -25,7 +25,7 @@ function levelClass(level: string): string {
 }
 
 export function LogViewer({ jobId }: { jobId: number }) {
-  const wsUrl = useMemo(() => getRequiredPublicEnv("NEXT_PUBLIC_WS_URL"), []);
+  const wsUrl = useMemo(() => getResolvedWsBaseUrl(), []);
 
   const [wsStatus, setWsStatus] = useState<WsStatus>("connecting");
   const [logs, setLogs] = useState<LogItem[]>([]);

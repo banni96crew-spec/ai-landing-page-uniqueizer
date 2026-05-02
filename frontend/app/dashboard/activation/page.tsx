@@ -1,8 +1,10 @@
-import { ActivationPanel } from "../../../components/account/ActivationPanel";
-import { requireAuthenticatedSession } from "../../../lib/server-api";
+"use client";
 
-export default async function ActivationPage() {
-  const account = await requireAuthenticatedSession();
+import { ActivationPanel } from "../../../components/account/ActivationPanel";
+import { useDashboardSession } from "../../../components/DashboardAuthGate";
+
+export default function ActivationPage() {
+  const account = useDashboardSession();
 
   return (
     <main className="min-h-screen bg-bg-primary px-6">
