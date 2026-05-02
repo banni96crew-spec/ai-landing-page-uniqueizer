@@ -161,6 +161,54 @@ class AuthLicenseRouteTests(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json(), {"detail": "Authentication required"})
 
+    def test_jobs_create_rejects_when_trial_site_quota_is_full(self) -> None:
+        self.client.post(
+            "/api/auth/register",
+            json={"login": "owner", "password": "supersecret", "telegram_username": ""},
+        )
+        conn = database.get_connection()
+        try:
+            for idx in range(3):
+                conn.execute(
+                    "INSERT INTO jobs (target_url, status) VALUES (?, 'done')",
+                    (f"https://quota-{idx}.example.com",),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.post(
+            "/api/jobs",
+            json={"target_url": "https://example.com/new"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json(), {"detail": "Site quota exceeded"})
+
+    def test_jobs_create_allows_over_quota_when_plan_is_premium(self) -> None:
+        self.client.post(
+            "/api/auth/register",
+            json={"login": "owner", "password": "supersecret", "telegram_username": ""},
+        )
+        conn = database.get_connection()
+        try:
+            conn.execute("UPDATE users SET plan = 'premium'")
+            for idx in range(5):
+                conn.execute(
+                    "INSERT INTO jobs (target_url, status) VALUES (?, 'done')",
+                    (f"https://prem-{idx}.example.com",),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.post(
+            "/api/jobs",
+            json={"target_url": "https://example.com/extra"},
+        )
+
+        self.assertEqual(response.status_code, 201)
+
     def test_license_verify_updates_plan_for_authenticated_user(self) -> None:
         self._create_job("done")
         self.client.post(

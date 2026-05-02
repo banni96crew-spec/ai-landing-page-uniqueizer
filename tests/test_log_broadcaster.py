@@ -7,13 +7,20 @@ from unittest import mock
 from fastapi import WebSocketDisconnect
 
 from backend import config, database
+from backend.routers.auth import _hash_session_token
 from backend.state import JOB_QUEUES
 from backend.ws import log_broadcaster
 
 
 class FakeWebSocket:
-    def __init__(self, *, disconnect_on_send: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        disconnect_on_send: bool = False,
+        cookies: dict[str, str] | None = None,
+    ) -> None:
         self.disconnect_on_send = disconnect_on_send
+        self.cookies = cookies if cookies is not None else {}
         self.accepted = False
         self.closed = False
         self.close_code: int | None = None
@@ -40,11 +47,38 @@ class LogBroadcasterTests(unittest.IsolatedAsyncioTestCase):
         config.DATABASE_URL = str(self.db_path)
         JOB_QUEUES.clear()
         database.init_db()
+        self.ws_cookies = self._seed_ws_session()
 
     def tearDown(self) -> None:
         JOB_QUEUES.clear()
         config.DATABASE_URL = self.previous_database_url
         self.temp_dir.cleanup()
+
+    def _seed_ws_session(self, raw_token: str = "ws-unit-test-session") -> dict[str, str]:
+        conn = database.get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO users (login, password_hash, password_salt, telegram_username, plan)
+                VALUES ('wstest', 'x', ?, '', 'premium')
+                """,
+                ("00" * 16,),
+            )
+            row = conn.execute(
+                "SELECT id FROM users WHERE login = 'wstest' LIMIT 1"
+            ).fetchone()
+            assert row is not None
+            conn.execute(
+                """
+                INSERT INTO auth_sessions (user_id, session_token_hash, expires_at)
+                VALUES (?, ?, datetime('now', '+1 day'))
+                """,
+                (int(row["id"]), _hash_session_token(raw_token)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {config.AUTH_SESSION_COOKIE_NAME: raw_token}
 
     def _create_job(self, status: str) -> int:
         conn = database.get_connection()
@@ -83,8 +117,27 @@ class LogBroadcasterTests(unittest.IsolatedAsyncioTestCase):
         finally:
             conn.close()
 
+    async def test_missing_cookie_closes_before_accept(self) -> None:
+        websocket = FakeWebSocket(cookies={})
+
+        await log_broadcaster.stream_job_logs(websocket, 999999)
+
+        self.assertFalse(websocket.accepted)
+        self.assertTrue(websocket.closed)
+        self.assertEqual(websocket.close_code, log_broadcaster.WS_AUTH_FAILED_CLOSE_CODE)
+
+    async def test_invalid_cookie_closes_before_accept(self) -> None:
+        bad_cookies = {config.AUTH_SESSION_COOKIE_NAME: "not-a-real-session"}
+        websocket = FakeWebSocket(cookies=bad_cookies)
+
+        await log_broadcaster.stream_job_logs(websocket, 999999)
+
+        self.assertFalse(websocket.accepted)
+        self.assertTrue(websocket.closed)
+        self.assertEqual(websocket.close_code, log_broadcaster.WS_AUTH_FAILED_CLOSE_CODE)
+
     async def test_missing_job_closes_with_4004(self) -> None:
-        websocket = FakeWebSocket()
+        websocket = FakeWebSocket(cookies=self.ws_cookies)
 
         await log_broadcaster.stream_job_logs(websocket, 999999)
 
@@ -102,7 +155,7 @@ class LogBroadcasterTests(unittest.IsolatedAsyncioTestCase):
                 ("warn", "second", "2026-01-01 00:00:02"),
             ],
         )
-        websocket = FakeWebSocket()
+        websocket = FakeWebSocket(cookies=self.ws_cookies)
 
         await log_broadcaster.stream_job_logs(websocket, job_id)
 
@@ -145,7 +198,7 @@ class LogBroadcasterTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         }
-        websocket = FakeWebSocket()
+        websocket = FakeWebSocket(cookies=self.ws_cookies)
 
         with mock.patch.object(
             log_broadcaster,
@@ -176,7 +229,7 @@ class LogBroadcasterTests(unittest.IsolatedAsyncioTestCase):
             [("info", "history", "2026-01-01 00:00:01")],
         )
         JOB_QUEUES[job_id] = asyncio.Queue(maxsize=1000)
-        websocket = FakeWebSocket()
+        websocket = FakeWebSocket(cookies=self.ws_cookies)
 
         broadcaster_task = asyncio.create_task(
             log_broadcaster.stream_job_logs(websocket, job_id)
@@ -221,7 +274,7 @@ class LogBroadcasterTests(unittest.IsolatedAsyncioTestCase):
             job_id,
             [("info", "history", "2026-01-01 00:00:01")],
         )
-        websocket = FakeWebSocket(disconnect_on_send=True)
+        websocket = FakeWebSocket(disconnect_on_send=True, cookies=self.ws_cookies)
 
         await log_broadcaster.stream_job_logs(websocket, job_id)
 

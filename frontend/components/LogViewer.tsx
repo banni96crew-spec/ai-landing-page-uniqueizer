@@ -64,6 +64,28 @@ export function LogViewer({ jobId }: { jobId: number }) {
         });
         if (!res.ok) return;
         const history = (await res.json()) as JobLogResponse[];
+        // #region agent log
+        fetch("http://127.0.0.1:7257/ingest/47461072-dce2-4906-9471-72a4323407ed", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "df886a",
+          },
+          body: JSON.stringify({
+            sessionId: "df886a",
+            hypothesisId: "H3",
+            location: "LogViewer.tsx:loadHistory",
+            message: "history_response",
+            data: {
+              jobId,
+              ok: res.ok,
+              status: res.status,
+              rowCount: Array.isArray(history) ? history.length : -1,
+            },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
         if (!alive) return;
         for (const row of history) {
           ingestLog({
@@ -117,6 +139,23 @@ export function LogViewer({ jobId }: { jobId: number }) {
       ws.onopen = () => {
         retryRef.current = 0;
         setWsStatus("connected");
+        // #region agent log
+        fetch("http://127.0.0.1:7257/ingest/47461072-dce2-4906-9471-72a4323407ed", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "df886a",
+          },
+          body: JSON.stringify({
+            sessionId: "df886a",
+            hypothesisId: "H2",
+            location: "LogViewer.tsx:ws.onopen",
+            message: "ws_open",
+            data: { jobId, wsUrl },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
       };
 
       ws.onerror = () => {
@@ -128,7 +167,28 @@ export function LogViewer({ jobId }: { jobId: number }) {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev: CloseEvent) => {
+        // #region agent log
+        fetch("http://127.0.0.1:7257/ingest/47461072-dce2-4906-9471-72a4323407ed", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "df886a",
+          },
+          body: JSON.stringify({
+            sessionId: "df886a",
+            hypothesisId: "H2",
+            location: "LogViewer.tsx:ws.onclose",
+            message: "ws_close",
+            data: {
+              jobId,
+              code: ev.code,
+              reasonLen: (ev.reason && ev.reason.length) || 0,
+            },
+            timestamp: Date.now(),
+          }),
+        }).catch(() => {});
+        // #endregion
         setWsStatus("closed");
         if (!alive) return;
         if (terminalStatusRef.current) return;

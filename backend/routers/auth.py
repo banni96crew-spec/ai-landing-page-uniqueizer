@@ -18,7 +18,7 @@ from backend.schemas import (
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-_PLAN_LIMITS: dict[str, int | None] = {
+PLAN_SITE_LIMITS: dict[str, int | None] = {
     "trial": 3,
     "standard": 25,
     "premium": None,
@@ -64,7 +64,7 @@ def _build_account_payload(
     ).fetchone()
     sites_used = int(count_row["cnt"]) if count_row is not None else 0
     plan = str(user_row["plan"])
-    limit = _PLAN_LIMITS.get(plan)
+    limit = PLAN_SITE_LIMITS.get(plan)
     sites_remaining = None if limit is None else max(limit - sites_used, 0)
     return {
         "login": str(user_row["login"]),
@@ -159,6 +159,14 @@ def _load_authenticated_user_sync(session_token: str) -> dict[str, object]:
 async def get_authenticated_user(request: Request) -> dict[str, object]:
     session_token = _get_session_token_from_request(request)
     return await asyncio.to_thread(_load_authenticated_user_sync, session_token)
+
+
+def validate_session_token_sync(session_token: str) -> None:
+    """Validate session for non-HTTP contexts (e.g. WebSocket). Raises HTTPException(401) if invalid."""
+    cleaned = session_token.strip()
+    if not cleaned:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    _load_authenticated_user_sync(cleaned)
 
 
 @router.post(

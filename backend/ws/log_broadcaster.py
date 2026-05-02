@@ -1,20 +1,52 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import time
+from pathlib import Path
 from typing import TypedDict
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
+from backend import config
 from backend.database import get_connection
+from backend.routers.auth import validate_session_token_sync
 from backend.state import JOB_QUEUES
 
 router = APIRouter()
 
 HISTORY_LIMIT = 500
 JOB_NOT_FOUND_CLOSE_CODE = 4004
+WS_AUTH_FAILED_CLOSE_CODE = 4401
 QUEUE_POLL_TIMEOUT_SECONDS = 1.0
 QUEUE_MISSING_RETRY_SECONDS = 0.2
 TERMINAL_STATUSES = {"done", "failed"}
+
+_AGENT_DEBUG_LOG = Path(__file__).resolve().parents[2] / "debug-df886a.log"
+
+
+def _agent_debug_log(
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict[str, object],
+) -> None:
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "df886a",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with _AGENT_DEBUG_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
 
 
 class LogEvent(TypedDict):
@@ -130,6 +162,32 @@ async def _send_terminal_message(websocket: WebSocket, status: str) -> None:
 
 @router.websocket("/ws/logs/{job_id}")
 async def stream_job_logs(websocket: WebSocket, job_id: int) -> None:
+    token = websocket.cookies.get(config.AUTH_SESSION_COOKIE_NAME, "").strip()
+    if not token:
+        # region agent log
+        _agent_debug_log(
+            "H2",
+            "log_broadcaster:stream_job_logs",
+            "ws_close_no_token",
+            {"job_id": job_id, "pid": os.getpid(), "close_code": WS_AUTH_FAILED_CLOSE_CODE},
+        )
+        # endregion
+        await websocket.close(code=WS_AUTH_FAILED_CLOSE_CODE)
+        return
+    try:
+        await asyncio.to_thread(validate_session_token_sync, token)
+    except HTTPException:
+        # region agent log
+        _agent_debug_log(
+            "H2",
+            "log_broadcaster:stream_job_logs",
+            "ws_close_token_invalid",
+            {"job_id": job_id, "pid": os.getpid(), "close_code": WS_AUTH_FAILED_CLOSE_CODE},
+        )
+        # endregion
+        await websocket.close(code=WS_AUTH_FAILED_CLOSE_CODE)
+        return
+
     snapshot = await _load_job_snapshot(job_id)
     if snapshot is None:
         await websocket.close(code=JOB_NOT_FOUND_CLOSE_CODE)
@@ -137,6 +195,20 @@ async def stream_job_logs(websocket: WebSocket, job_id: int) -> None:
 
     try:
         await websocket.accept()
+        # region agent log
+        _agent_debug_log(
+            "H1",
+            "log_broadcaster:stream_job_logs",
+            "ws_accepted_snapshot",
+            {
+                "job_id": job_id,
+                "pid": os.getpid(),
+                "snapshot_log_count": len(snapshot["logs"]),
+                "job_status": snapshot["status"],
+                "queue_present": JOB_QUEUES.get(job_id) is not None,
+            },
+        )
+        # endregion
         await _send_history(websocket, snapshot["logs"])
 
         status = snapshot["status"]
@@ -159,6 +231,19 @@ async def stream_job_logs(websocket: WebSocket, job_id: int) -> None:
                 return
 
         terminal_sent = False
+
+        # region agent log
+        _agent_debug_log(
+            "H1",
+            "log_broadcaster:live_loop_enter",
+            "before_while_true",
+            {
+                "job_id": job_id,
+                "pid": os.getpid(),
+                "initial_queue_present": JOB_QUEUES.get(job_id) is not None,
+            },
+        )
+        # endregion
 
         while True:
             queue = JOB_QUEUES.get(job_id)

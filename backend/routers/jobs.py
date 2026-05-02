@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from backend.config import BLOCKED_IP_PREFIXES, MAX_QUEUE_SIZE, get_artifact_path, get_job_dir
 from backend.database import get_connection
 from backend.job_progress import calculate_progress_pct
-from backend.routers.auth import get_authenticated_user
+from backend.routers.auth import PLAN_SITE_LIMITS, get_authenticated_user
 from backend.schemas import ArtifactResponse, JobCreateRequest, JobDetailResponse, JobLogResponse, JobResponse
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -55,6 +55,21 @@ def create_job(
 
     conn = get_connection()
     try:
+        plan = str(_user["plan"])
+        site_limit = PLAN_SITE_LIMITS.get(plan)
+        if site_limit is not None:
+            usage_row = conn.execute(
+                """
+                SELECT COUNT(*) AS cnt FROM jobs
+                WHERE status IN ('pending', 'running', 'done')
+                """
+            ).fetchone()
+            if int(usage_row["cnt"]) >= site_limit:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Site quota exceeded",
+                )
+
         pending_count_row = conn.execute(
             "SELECT COUNT(*) AS cnt FROM jobs WHERE status = 'pending'"
         ).fetchone()

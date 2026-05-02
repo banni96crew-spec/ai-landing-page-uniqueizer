@@ -1,6 +1,10 @@
 import sys
 import asyncio
+import json
 import logging
+import os
+import time
+from pathlib import Path
 # --- ИНЪЕКЦИЯ ДЛЯ WINDOWS И PLAYWRIGHT ---
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
@@ -14,6 +18,31 @@ from backend.worker.pipeline import log_job_message, mark_job_failed, run_pipeli
 logger = logging.getLogger(__name__)
 
 _MODULE_LOGGER_CONFIGURED = False
+
+_AGENT_DEBUG_LOG = Path(__file__).resolve().parents[2] / "debug-df886a.log"
+
+
+def _agent_debug_log(
+    hypothesis_id: str,
+    location: str,
+    message: str,
+    data: dict[str, object],
+) -> None:
+    # region agent log
+    try:
+        payload = {
+            "sessionId": "df886a",
+            "hypothesisId": hypothesis_id,
+            "location": location,
+            "message": message,
+            "data": data,
+            "timestamp": int(time.time() * 1000),
+        }
+        with _AGENT_DEBUG_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # endregion
 
 
 def _ensure_worker_console_logging() -> None:
@@ -97,6 +126,14 @@ async def worker_loop() -> None:
             logger.info("worker: claimed job_id=%s target_url=%s", job_id, target_url)
 
             JOB_QUEUES[job_id] = asyncio.Queue(maxsize=1000)
+            # region agent log
+            _agent_debug_log(
+                "H1",
+                "runner:worker_loop",
+                "job_queue_created",
+                {"job_id": job_id, "pid": os.getpid()},
+            )
+            # endregion
 
             try:
                 await log_job_message(job_id, "info", "MARKER:pipeline_started")
