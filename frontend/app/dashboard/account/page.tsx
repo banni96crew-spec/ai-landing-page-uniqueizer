@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import { AccountPasswordRow } from "../../../components/account/AccountPasswordRow";
 import {
   formatAccountPlan,
   formatQuotaSummary,
@@ -48,14 +49,7 @@ export default function AccountPage() {
                   {account.login}
                 </dd>
               </div>
-              <div>
-                <dt className="text-xs uppercase tracking-[0.18em] text-text-secondary">
-                  Password
-                </dt>
-                <dd className="mt-2 text-base font-medium text-text-primary">
-                  {"••••••••"}
-                </dd>
-              </div>
+              <AccountPasswordRow />
               <div>
                 <dt className="text-xs uppercase tracking-[0.18em] text-text-secondary">
                   Telegram

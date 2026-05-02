@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { clearStoredPasswordForAccountDisplay } from "../lib/account-password-display";
 import { fetchClientApi } from "../lib/client-api";
 
 type NavItem = {
@@ -56,6 +57,7 @@ export function AppHeader() {
         method: "POST",
       });
     } finally {
+      clearStoredPasswordForAccountDisplay();
       router.push("/login");
       router.refresh();
       setIsLoggingOut(false);
