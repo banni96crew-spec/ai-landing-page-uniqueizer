@@ -54,32 +54,7 @@ export function AccountPasswordRow() {
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
-    const pw = getStoredPasswordForAccountDisplay();
-    setStored(pw);
-    const hasStored = pw !== null && pw.length > 0;
-    // #region agent log
-    fetch(
-      "http://127.0.0.1:7257/ingest/47461072-dce2-4906-9471-72a4323407ed",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "bec52b",
-        },
-        body: JSON.stringify({
-          sessionId: "bec52b",
-          runId: "post-fix",
-          location: "AccountPasswordRow.tsx:mount",
-          message: "Account password visibility sources",
-          data: {
-            hypothesisId: "H1",
-            hasStoredPasswordForToggle: hasStored,
-          },
-          timestamp: Date.now(),
-        }),
-      },
-    ).catch(() => {});
-    // #endregion
+    setStored(getStoredPasswordForAccountDisplay());
   }, []);
 
   const canToggle = stored !== null && stored.length > 0;

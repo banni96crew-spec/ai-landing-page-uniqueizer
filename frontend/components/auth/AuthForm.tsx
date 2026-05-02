@@ -67,30 +67,6 @@ export function AuthForm({ mode }: AuthFormProps) {
 
       await response.json() as LoginResponse | RegisterResponse;
       setStoredPasswordForAccountDisplay(password);
-      // #region agent log
-      fetch(
-        "http://127.0.0.1:7257/ingest/47461072-dce2-4906-9471-72a4323407ed",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Debug-Session-Id": "bec52b",
-          },
-          body: JSON.stringify({
-            sessionId: "bec52b",
-            runId: "post-fix",
-            location: "AuthForm.tsx:onSubmit",
-            message: "Auth success — client password persistence",
-            data: {
-              hypothesisId: "H2",
-              mode: isRegister ? "register" : "login",
-              passwordStoredForDisplayElsewhere: true,
-            },
-            timestamp: Date.now(),
-          }),
-        },
-      ).catch(() => {});
-      // #endregion
       router.push("/dashboard");
       router.refresh();
     } catch {
