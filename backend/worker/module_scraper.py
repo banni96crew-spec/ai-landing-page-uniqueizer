@@ -3,7 +3,7 @@ import logging
 import random
 from pathlib import Path
 from typing import TypedDict
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 try:
     import httpx
@@ -38,6 +38,12 @@ from backend.worker.asset_rewriter import AssetRewriteResult, rewrite_asset_urls
 from backend.worker.css_url_rewriter import rewrite_css_urls
 from backend.worker.dom_cleaner import finalize_clean_sync, prepare_clean_sync
 from backend.worker.google_fonts import download_google_fonts
+from backend.worker.module_dom_mutator import _replace_css_selectors, build_selector_map
+
+try:
+    from bs4 import BeautifulSoup
+except ModuleNotFoundError:  # pragma: no cover - fallback for test environments
+    BeautifulSoup = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +130,122 @@ def _read_text_sync(path: Path) -> str:
 
 def _write_text_sync(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
+
+
+def _is_external_stylesheet_link(tag: object) -> bool:
+    if not hasattr(tag, "name") or str(getattr(tag, "name", "")).lower() != "link":
+        return False
+    rel_attr = getattr(tag, "get", lambda *_: None)("rel")
+    if isinstance(rel_attr, str):
+        rel_values = [rel_attr.lower()]
+    elif isinstance(rel_attr, list):
+        rel_values = [str(item).lower() for item in rel_attr]
+    else:
+        rel_values = []
+    if "stylesheet" not in rel_values:
+        return False
+    href = getattr(tag, "get", lambda *_: None)("href")
+    return isinstance(href, str) and bool(href.strip())
+
+
+def _resolve_css_url(base_url: str, href: str) -> str | None:
+    href_value = href.strip()
+    if not href_value:
+        return None
+    lowered = href_value.lower()
+    if lowered.startswith(("data:", "javascript:", "mailto:", "tel:", "#")):
+        return None
+    return urljoin(base_url, href_value)
+
+
+def _write_css_asset_sync(path: Path, css_text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(css_text, encoding="utf-8")
+
+
+async def _inline_external_stylesheets(
+    *,
+    html: str,
+    base_url: str,
+    assets_dir: Path,
+    url_cache: dict[str, str],
+    used_filenames: dict[str, str],
+    client: object,
+    job_id: int,
+) -> str:
+    if BeautifulSoup is None:
+        return html
+
+    soup = BeautifulSoup(html, "lxml")
+    stylesheet_links = [tag for tag in soup.find_all("link") if _is_external_stylesheet_link(tag)]
+    if not stylesheet_links:
+        return html
+
+    fetched_css_paths: list[Path] = []
+    fetched_css_chunks: list[str] = []
+
+    for index, link_tag in enumerate(stylesheet_links):
+        href = str(link_tag.get("href") or "").strip()
+        css_url = _resolve_css_url(base_url, href)
+        if css_url is None:
+            continue
+        try:
+            response = await client.get(css_url)
+        except Exception as exc:
+            logger.warning(
+                "Stylesheet download failed: %s (%s) (job_id=%s)",
+                css_url,
+                exc,
+                job_id,
+            )
+            continue
+        if response.status_code != 200:
+            logger.warning(
+                "Stylesheet download failed (status=%s): %s (job_id=%s)",
+                response.status_code,
+                css_url,
+                job_id,
+            )
+            continue
+
+        css_text = response.text
+        css_file_path = assets_dir / f"external_stylesheet_{index}.css"
+        rewritten_css = await rewrite_css_urls(
+            css_text=css_text,
+            css_file_base_url=css_url,
+            css_file_path=css_file_path,
+            assets_dir=assets_dir,
+            url_cache=url_cache,
+            used_filenames=used_filenames,
+            client=client,
+            job_id=job_id,
+        )
+        await asyncio.to_thread(_write_css_asset_sync, css_file_path, rewritten_css)
+        fetched_css_paths.append(css_file_path)
+        fetched_css_chunks.append(rewritten_css)
+
+    if not fetched_css_chunks:
+        return html
+
+    selector_map = await asyncio.to_thread(build_selector_map, fetched_css_paths)
+    inlined_css = "\n\n".join(
+        _replace_css_selectors(chunk, selector_map) for chunk in fetched_css_chunks
+    )
+
+    for link_tag in stylesheet_links:
+        link_tag.decompose()
+
+    if soup.head is None:
+        head_tag = soup.new_tag("head")
+        if soup.html is not None:
+            soup.html.insert(0, head_tag)
+        else:
+            soup.insert(0, head_tag)
+    style_tag = soup.new_tag("style")
+    style_tag["data-inlined-stylesheets"] = "true"
+    style_tag.string = inlined_css
+    soup.head.append(style_tag)
+    return str(soup)
 
 
 def _log_job_message_sync(job_id: int, level: str, message: str) -> None:
@@ -452,8 +574,17 @@ async def _rewrite_scraped_assets(
     url_cache: dict[str, str] = {}
     used_filenames: dict[str, str] = {}
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        rewrite_result = await rewrite_asset_urls(
+        html_with_inlined_css = await _inline_external_stylesheets(
             html=html,
+            base_url=target_url,
+            assets_dir=raw_dir / "assets",
+            url_cache=url_cache,
+            used_filenames=used_filenames,
+            client=client,
+            job_id=job_id,
+        )
+        rewrite_result = await rewrite_asset_urls(
+            html=html_with_inlined_css,
             base_url=target_url,
             raw_dir=raw_dir,
             client=client,
