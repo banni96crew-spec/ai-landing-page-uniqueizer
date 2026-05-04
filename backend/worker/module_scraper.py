@@ -37,6 +37,7 @@ from backend.database import get_connection, log_message
 from backend.worker.asset_rewriter import AssetRewriteResult, rewrite_asset_urls
 from backend.worker.css_url_rewriter import rewrite_css_urls
 from backend.worker.dom_cleaner import finalize_clean_sync, prepare_clean_sync
+from backend.worker.dom_utils import _force_dark_mode, _scroll_to_bottom_for_lazy_load
 from backend.worker.google_fonts import download_google_fonts
 from backend.worker.module_dom_mutator import _replace_css_selectors, build_selector_map
 
@@ -454,9 +455,47 @@ async def _wait_for_real_content(page: object, job_id: int) -> None:
         await page.wait_for_timeout(CHALLENGE_SETTLE_POLL_MS)
 
 
-async def _collect_html(page: object) -> str:
-    await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    await page.wait_for_timeout(LAZY_LOAD_WAIT_MS)
+# Selectors that commonly wrap "connection lost" / offline error overlays.
+_CONNECTION_LOST_SELECTORS = (
+    "[class*='connection']",
+    "[class*='offline']",
+    "[class*='error-modal']",
+    "[class*='error-overlay']",
+    "[class*='network-error']",
+    "[id*='connection']",
+    "[id*='offline']",
+    "[role='alertdialog']",
+    "[role='dialog']",
+)
+_CONNECTION_LOST_KEYWORDS = frozenset(
+    ["connection lost", "connection error", "you are offline", "no internet", "reconnecting"]
+)
+
+
+async def _remove_connection_lost_overlay(page: object) -> None:
+    """Find and remove any 'Connection lost' modal/overlay from the live DOM before snapshot."""
+    for selector in _CONNECTION_LOST_SELECTORS:
+        try:
+            locators = page.locator(selector)
+            count = await locators.count()
+            for i in range(count):
+                loc = locators.nth(i)
+                try:
+                    text = (await loc.inner_text(timeout=500)).lower()
+                except Exception:
+                    continue
+                if any(kw in text for kw in _CONNECTION_LOST_KEYWORDS):
+                    await loc.evaluate("el => el.remove()")
+                    logger.debug("scraper: removed connection-lost overlay (%s)", selector)
+        except Exception:
+            # Best-effort; never abort the scrape because of DOM cleanup.
+            continue
+
+
+async def _collect_html(page: object, job_id: int) -> str:
+    await _force_dark_mode(page)
+    await _scroll_to_bottom_for_lazy_load(page, job_id)
+    await _remove_connection_lost_overlay(page)
     return await page.content()
 
 
@@ -679,7 +718,7 @@ async def scrape(
                     await _wait_action_jitter(page)
 
                     logger.info("scraper: collecting page html (job_id=%s)", job_id)
-                    html = await _collect_html(page)
+                    html = await _collect_html(page, job_id)
                     if len(html) < MIN_HTML_LENGTH:
                         raise ScraperError("Scraped HTML too small, possible bot detection")
                 finally:
